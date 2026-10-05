@@ -30,6 +30,11 @@ jobs:
       - name: Fetch prices (incremental)
         run: python src/fetch.py
 
+      - name: Fetch fund NAV (best effort)
+        # 終値との突き合わせ用。失敗しても終値のみで続行する
+        continue-on-error: true
+        run: python src/fetch_nav.py
+
       - name: Build dashboard
         run: python src/dashboard.py
 

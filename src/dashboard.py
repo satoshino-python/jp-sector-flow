@@ -8,11 +8,12 @@ import pandas as pd
 import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from metrics import compute  # noqa: E402
+from metrics import DEV_WARN_PT, compute  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PRICES = ROOT / "data" / "prices.parquet"
 UNIVERSE = ROOT / "data" / "universe.csv"
+NAV = ROOT / "data" / "nav.parquet"
 OUT_HTML = ROOT / "docs" / "index.html"
 OUT_CSV = ROOT / "data" / "summary.csv"
 
@@ -92,15 +93,24 @@ def table_html(summary: pd.DataFrame) -> str:
     rows = []
     for s, r in summary.iterrows():
         color = LABEL_COLORS.get(r["label"], "#999")
+        if pd.notna(r.get("dev_20d")):
+            flag = r.get("nav_flag") or ""
+            mark = f" <span class='warn'>⚠ {html.escape(flag)}</span>" if flag else ""
+            nav_cell = f"{r['dev_20d']:+.2f}{mark}"
+            noise_cell = f"{r['nav_noise']:.2f}"
+        else:
+            nav_cell, noise_cell = "-", "-"
         rows.append(
             f"<tr><td>{html.escape(s)}</td>"
             f"<td><span class='tag' style='background:{color}'>{html.escape(r['label'])}</span></td>"
             f"<td>{r['score']:.0f}</td><td>{r['rel_20d']:+.1f}</td><td>{r['share_z']:+.2f}</td>"
-            f"<td>{r['breadth_ma25']:.0f}%</td><td>{r['n_stocks']}</td></tr>"
+            f"<td>{r['breadth_ma25']:.0f}%</td><td>{r['n_stocks']}</td>"
+            f"<td class='l'>{nav_cell}</td><td>{noise_cell}</td></tr>"
         )
     return (
         "<table><thead><tr><th>業種</th><th>判定</th><th>スコア</th><th>相対20日</th>"
-        "<th>シェアz</th><th>25日線上</th><th>銘柄数</th></tr></thead><tbody>"
+        "<th>シェアz</th><th>25日線上</th><th>銘柄数</th>"
+        "<th>終値−基準価額<br>20日(pt)</th><th>日次ずれ<br>σ(%)</th></tr></thead><tbody>"
         + "".join(rows) + "</tbody></table>"
     )
 
@@ -130,6 +140,12 @@ def build_html(res, demo: bool) -> str:
                    if demo else "")
     missing = (f"<p class='note'>取得できなかった銘柄: {res.n_missing}件(集計から除外)</p>"
                if res.n_missing else "")
+    if res.nav_as_of is not None:
+        nav_note = (f"基準価額(分配金再投資)との突き合わせ基準日: {res.nav_as_of.date()}。"
+                    f"終値の20日騰落と基準価額の20日騰落の差が{DEV_WARN_PT}ptを超える、または"
+                    "相対強度の符号が食い違う業種に⚠を付けています(薄いETFの終値ノイズの目安)。")
+    else:
+        nav_note = "基準価額を取得できなかったため、終値のみで算出しています(突き合わせなし)。"
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -144,6 +160,7 @@ th,td{{border-bottom:1px solid #e5e5e5;padding:5px 4px;text-align:right;white-sp
 th:first-child,td:first-child{{text-align:left;white-space:normal}}
 .tag{{color:#fff;border-radius:4px;padding:1px 6px;font-size:11px}}
 .wrap{{overflow-x:auto}}
+td.l{{white-space:nowrap}} .warn{{color:#b45309;font-size:11px}}
 </style></head><body>
 <h1>日本株 業種別 資金動向</h1>
 <p class="note">データ基準日: {res.as_of.date()} / 業種ETF(TOPIX-17)+主要銘柄の売買代金集計 / 投資判断の材料の一つであり、売買の推奨ではありません</p>
@@ -151,7 +168,8 @@ th:first-child,td:first-child{{text-align:left;white-space:normal}}
 {''.join(parts)}
 <section><h2>業種一覧</h2>
 <p class="note">判定は相対強度(20日)と売買代金シェアzの符号による簡易分類。スコアは4指標の順位平均(0-100)。</p>
-<div class="wrap">{table_html(s)}</div>{missing}</section>
+<div class="wrap">{table_html(s)}</div>
+<p class="note">{nav_note}</p>{missing}</section>
 <section><h2>読み方の注意</h2>
 <ul class="note">
 <li>売買代金は買いと売りの合計で、純流入ではありません。方向は価格とセットで見てください。</li>
@@ -166,10 +184,14 @@ def main() -> int:
     demo = "--demo" in sys.argv
     prices = pd.read_parquet(PRICES)
     uni = pd.read_csv(UNIVERSE, dtype={"code": str})
-    res = compute(prices, uni)
+    nav = pd.read_parquet(NAV) if NAV.exists() else None
+    res = compute(prices, uni, nav)
     OUT_HTML.parent.mkdir(parents=True, exist_ok=True)
     OUT_HTML.write_text(build_html(res, demo), encoding="utf-8")
-    res.summary.round(4).to_csv(OUT_CSV, encoding="utf-8-sig")
+    out = res.summary.copy()
+    num_cols = out.select_dtypes("number").columns
+    out[num_cols] = out[num_cols].round(4)
+    out.to_csv(OUT_CSV, encoding="utf-8-sig")
     print(f"生成: {OUT_HTML} (基準日 {res.as_of.date()}, 業種 {len(res.summary)})")
     return 0
 

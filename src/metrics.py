@@ -13,6 +13,8 @@ import pandas as pd
 
 BENCH_CODE = "1306"
 MIN_COVERAGE = 0.8   # その日にデータがある銘柄が全体の何割以上なら有効日とするか
+DEV_WARN_PT = 0.5    # 終値と基準価額の20日リターン差がこれ(%pt)を超えたら「乖離大」
+SIGN_EPS = 0.3       # 相対強度の符号比較で、絶対値がこれ未満なら「ゼロ近傍」として無視(%pt)
 
 
 @dataclass
@@ -23,6 +25,41 @@ class Result:
     share_z: pd.DataFrame       # 同zスコア
     rs_line: pd.DataFrame       # 業種ETF/TOPIX を直近で100に揃えたもの
     n_missing: int              # 取得できなかった銘柄数
+    nav_as_of: pd.Timestamp | None = None   # 基準価額の最新の突き合わせ日(取得できなければNone)
+
+
+def _nav_stats(px: pd.Series, bench: pd.Series, nv: pd.Series) -> dict:
+    """ETF終値と基準価額(分配金再投資)を、両方そろった日だけで突き合わせる。
+
+    水準(1口/10口など単位)には依存せず、リターン同士で比較する。
+    """
+    d = pd.concat({"px": px, "nv": nv, "bm": bench}, axis=1).dropna()
+    if len(d) < 62:
+        return {}
+
+    def r20(s: pd.Series) -> float:
+        return float(s.iloc[-1] / s.iloc[-21] - 1) * 100
+
+    daily_diff = (d["px"].pct_change() - d["nv"].pct_change()).dropna().tail(60) * 100
+    return {
+        "nav_date": d.index[-1],
+        "dev_20d": r20(d["px"]) - r20(d["nv"]),                 # 終値20日騰落 − 基準価額20日騰落
+        "nav_noise": float(daily_diff.std()),                   # 日次の差の標準偏差(%)
+        "rel_20d_nav": r20(d["nv"]) - r20(d["bm"]),             # 基準価額ベースの相対強度
+        "rel_20d_same": r20(d["px"]) - r20(d["bm"]),            # 同じ日付区間での終値ベースの相対強度
+    }
+
+
+def _nav_flag(row: dict) -> str:
+    notes = []
+    dev = row.get("dev_20d")
+    if dev is not None and pd.notna(dev) and abs(dev) > DEV_WARN_PT:
+        notes.append("乖離大")
+    a, b = row.get("rel_20d_same"), row.get("rel_20d_nav")
+    if (a is not None and b is not None and pd.notna(a) and pd.notna(b)
+            and abs(a) > SIGN_EPS and abs(b) > SIGN_EPS and np.sign(a) != np.sign(b)):
+        notes.append("基準価額と判定相違")
+    return " / ".join(notes)
 
 
 def _pivot(prices: pd.DataFrame, col: str) -> pd.DataFrame:
@@ -41,9 +78,11 @@ def _label(rel20: float, z: float) -> str:
     return "低調"
 
 
-def compute(prices: pd.DataFrame, uni: pd.DataFrame) -> Result:
+def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = None) -> Result:
     close = _pivot(prices, "close")
     turn = _pivot(prices, "turnover")
+    nav_pv = (nav.pivot(index="date", columns="code", values="nav").sort_index()
+              if nav is not None and not nav.empty else None)
 
     etf = uni[uni["type"] == "etf"].set_index("sector")["code"]
     stocks = uni[uni["type"] == "stock"]
@@ -109,6 +148,11 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame) -> Result:
             "breadth_pos20": float(pos20[members].mean() * 100),
         }
         row["label"] = _label(row["rel_20d"], row["share_z"])
+        stats = (_nav_stats(close[ec], bench, nav_pv[ec])
+                 if nav_pv is not None and ec in nav_pv.columns else {})
+        row.update({k: stats.get(k, np.nan) for k in
+                    ["nav_date", "dev_20d", "nav_noise", "rel_20d_nav", "rel_20d_same"]})
+        row["nav_flag"] = _nav_flag(row)
         rows.append(row)
 
     summary = pd.DataFrame(rows).set_index("sector")
@@ -122,7 +166,9 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame) -> Result:
     rs = rs.tail(120)
     rs_line = rs / rs.iloc[0] * 100
 
+    nav_dates = pd.to_datetime(summary["nav_date"], errors="coerce").dropna()
     return Result(
+        nav_as_of=nav_dates.max() if len(nav_dates) else None,
         as_of=close.index[-1],
         summary=summary,
         share5=share5.tail(120),

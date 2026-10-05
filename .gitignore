@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+# 基準価額は毎回CSV全体を取り直す補助データ。リポジトリには保存しない
+data/nav.parquet
