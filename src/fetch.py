@@ -7,7 +7,10 @@
 import argparse
 import sys
 import time
+from datetime import datetime
+from datetime import time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -19,6 +22,20 @@ PRICES = ROOT / "data" / "prices.parquet"
 INITIAL_DAYS = 420      # 初回に遡る日数(60日指標+余裕)
 OVERLAP_DAYS = 7        # 差分更新時に重ねて取り直す日数(訂正対策)
 RETRIES = 3
+
+
+def drop_unfinished_day(df: pd.DataFrame, now=None) -> pd.DataFrame:
+    """東証の取引が終わる前(15:45 JST前)は、当日分の行を捨てる。
+
+    場中に取得すると、当日の出来高・売買代金が途中経過のまま入り、
+    売買代金の指標(シェアz、当日/20日比など)が大きく歪むため。
+    """
+    if df.empty:
+        return df
+    now = now or datetime.now(ZoneInfo("Asia/Tokyo"))
+    if now.time() >= dtime(15, 45):
+        return df
+    return df[df["date"] < pd.Timestamp(now.date())]
 
 
 def load_universe() -> pd.DataFrame:
@@ -125,6 +142,8 @@ def main() -> int:
         print(f"取得できなかった銘柄({len(missing)}): {', '.join(missing)}", file=sys.stderr)
 
     merged = pd.concat([old, new], ignore_index=True) if not old.empty else new
+    # 場中の途中経過を含めない(過去に混入した当日分もここで除去される)
+    merged = drop_unfinished_day(merged)
     merged = (merged.drop_duplicates(["date", "code"], keep="last")
                     .sort_values(["code", "date"]).reset_index(drop=True))
     # 保持期間を制限してリポジトリの肥大化を防ぐ
