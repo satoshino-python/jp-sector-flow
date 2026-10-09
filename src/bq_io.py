@@ -45,7 +45,9 @@ SUMMARY_SCHEMA = (
      ("etf_code", "STRING"), ("n_stocks", "INT64")]
     + [(c, "FLOAT64") for c in _SUMMARY_FLOATS]
     + [("label", "STRING"), ("ew_label", "STRING"), ("ew_flag", "STRING"),
-       ("nav_date", "DATE"), ("nav_flag", "STRING"), ("loaded_at", "TIMESTAMP")]
+       ("nav_date", "DATE"), ("nav_flag", "STRING"), ("loaded_at", "TIMESTAMP"),
+       # 時価総額加重を主軸にしたことで追加(既存テーブルには ensure_tables が末尾に足す)
+       ("cw_label", "STRING"), ("etf_flag", "STRING")]
 )
 
 TIMESERIES_SCHEMA = [
