@@ -5,6 +5,7 @@
   売買側 ... 構成銘柄の売買代金を業種別に合算したもの
             (業種ETF自体の売買代金は薄くノイズが大きいため使わない)
   広がり ... 業種内の上昇銘柄比率、25日線上の銘柄比率
+  銘柄指数 ... 構成銘柄の調整後終値から作る均等加重の業種指数(段階1: ETFと並べて検証中)
 """
 from dataclasses import dataclass
 
@@ -15,6 +16,8 @@ BENCH_CODE = "1306"
 MIN_COVERAGE = 0.8   # その日にデータがある銘柄が全体の何割以上なら有効日とするか
 DEV_WARN_PT = 0.5    # 終値と基準価額の20日リターン差がこれ(%pt)を超えたら「乖離大」
 SIGN_EPS = 0.3       # 相対強度の符号比較で、絶対値がこれ未満なら「ゼロ近傍」として無視(%pt)
+MAX_DAILY_MOVE = 0.45  # 日次リターンの絶対値がこれを超えたら誤データとみなして除外(値幅制限を超える動き)
+MIN_MEMBER_RATIO = 0.5  # 業種指数: その日にリターンがある銘柄が業種の何割以上なら計算するか
 
 
 @dataclass
@@ -26,6 +29,32 @@ class Result:
     rs_line: pd.DataFrame       # 業種ETF/TOPIX を直近で100に揃えたもの
     n_missing: int              # 取得できなかった銘柄数
     nav_as_of: pd.Timestamp | None = None   # 基準価額の最新の突き合わせ日(取得できなければNone)
+    rs_line_ew: pd.DataFrame | None = None  # 均等加重の業種指数/全銘柄均等加重 を直近で100に揃えたもの
+    outliers: list | None = None            # 誤データとして除外した (日付, 銘柄, 日次リターン)
+
+
+def _stock_returns(adj: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+    """銘柄の日次リターン。値幅制限を超えるような動きは誤データとして除外する。"""
+    r = adj.pct_change(fill_method=None)
+    bad = r.abs() > MAX_DAILY_MOVE
+    rows, cols = np.where(bad.values)
+    outliers = [(r.index[i].date(), r.columns[j], float(r.iat[i, j])) for i, j in zip(rows, cols)]
+    return r.mask(bad), outliers
+
+
+def _ew_index(r: pd.DataFrame, min_ratio: float = MIN_MEMBER_RATIO) -> pd.Series:
+    """均等加重指数(初日=1)。日々の構成銘柄リターンの単純平均を積み上げる。
+
+    その日にリターンがある銘柄が少なすぎる日は、リターン0(据え置き)として扱う。
+    """
+    n_valid = r.notna().sum(axis=1)
+    daily = r.mean(axis=1).where(n_valid >= max(1, int(np.ceil(r.shape[1] * min_ratio))), 0.0)
+    return (1 + daily.fillna(0.0)).cumprod()
+
+
+def _sign_conflict(a: float, b: float) -> bool:
+    return (pd.notna(a) and pd.notna(b) and abs(a) > SIGN_EPS and abs(b) > SIGN_EPS
+            and np.sign(a) != np.sign(b))
 
 
 def _nav_stats(px: pd.Series, bench: pd.Series, nv: pd.Series) -> dict:
@@ -81,6 +110,9 @@ def _label(rel20: float, z: float) -> str:
 def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = None) -> Result:
     close = _pivot(prices, "close")
     turn = _pivot(prices, "turnover")
+    # 調整後終値がない古いデータでも動くように、なければ終値で代用する
+    adj = _pivot(prices, "adj_close") if "adj_close" in prices.columns else close.copy()
+    adj = adj.reindex(columns=close.columns).fillna(close)
     nav_pv = (nav.pivot(index="date", columns="code", values="nav").sort_index()
               if nav is not None and not nav.empty else None)
 
@@ -92,7 +124,7 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     # 銘柄カバレッジが低い日(取得途中の日など)を除外する
     coverage = close[stock_codes].notna().mean(axis=1)
     valid_dates = coverage[coverage >= MIN_COVERAGE].index
-    close, turn = close.loc[valid_dates], turn.loc[valid_dates]
+    close, turn, adj = close.loc[valid_dates], turn.loc[valid_dates], adj.loc[valid_dates]
     if len(close) < 70:
         raise ValueError(f"有効な営業日が少なすぎます({len(close)}日)。60日指標に最低70日分が必要です。")
 
@@ -113,6 +145,14 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
 
     def ret(s: pd.Series, n: int) -> float:
         return float(s.iloc[-1] / s.iloc[-1 - n] - 1) * 100
+
+    # --- 価格(個別銘柄の均等加重指数・全銘柄均等加重対比) ---
+    stock_ret, outliers = _stock_returns(adj[stock_codes])
+    ew_all = _ew_index(stock_ret)
+    ew_sec = pd.DataFrame({
+        s: _ew_index(stock_ret[[c for c in stock_codes if sec_of[c] == s]])
+        for s in sectors if any(sec_of[c] == s for c in stock_codes)
+    })
 
     # --- 銘柄単位の指標 ---
     sc = close[stock_codes]
@@ -148,6 +188,13 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
             "breadth_pos20": float(pos20[members].mean() * 100),
         }
         row["label"] = _label(row["rel_20d"], row["share_z"])
+        if s in ew_sec.columns:
+            ix = ew_sec[s]
+            for n in (5, 20, 60):
+                row[f"ew_ret_{n}d"] = ret(ix, n)
+                row[f"ew_rel_{n}d"] = ret(ix, n) - ret(ew_all, n)
+            row["ew_label"] = _label(row["ew_rel_20d"], row["share_z"])
+            row["ew_flag"] = "ETFと方向相違" if _sign_conflict(row["rel_20d"], row["ew_rel_20d"]) else ""
         stats = (_nav_stats(close[ec], bench, nav_pv[ec])
                  if nav_pv is not None and ec in nav_pv.columns else {})
         row.update({k: stats.get(k, np.nan) for k in
@@ -166,6 +213,9 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     rs = rs.tail(120)
     rs_line = rs / rs.iloc[0] * 100
 
+    rs_ew = ew_sec[[s for s in summary.index if s in ew_sec.columns]].div(ew_all, axis=0).tail(120)
+    rs_line_ew = rs_ew / rs_ew.iloc[0] * 100
+
     nav_dates = pd.to_datetime(summary["nav_date"], errors="coerce").dropna()
     return Result(
         nav_as_of=nav_dates.max() if len(nav_dates) else None,
@@ -175,4 +225,6 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
         share_z=share_z.tail(120),
         rs_line=rs_line,
         n_missing=n_missing,
+        rs_line_ew=rs_line_ew,
+        outliers=outliers,
     )
