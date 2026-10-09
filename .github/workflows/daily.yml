@@ -5,6 +5,10 @@ on:
     # 平日 16:30 JST (= 07:30 UTC)。東証の大引けは15:30。実行は数分〜十数分遅れることがある
     - cron: "30 7 * * 1-5"
   workflow_dispatch: {}   # 手動実行用
+  push:
+    # trigger/run.txt を更新してpushすると再実行される(自動化からの再実行用。gh が使えない環境向け)
+    branches: [main]
+    paths: [trigger/run.txt]
 
 permissions:
   contents: write
