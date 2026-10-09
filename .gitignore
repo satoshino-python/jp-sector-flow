@@ -7,3 +7,5 @@ data/nav.parquet
 
 # 株価の作業用ファイル(保存先の正は BigQuery。実行のたびに bq_sync.py --pull で作る)
 data/prices.parquet
+data/snapshot.json
+snapshot-page.html

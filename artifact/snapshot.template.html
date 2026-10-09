@@ -1,0 +1,617 @@
+<title>業種別 資金動向 共有版</title>
+<style>
+/* 構成: 上から 見出し → Claudeの見立て → 判定の内訳(ヒーロー) → ヒートマップ → 散布図 → 推移 → ETF比較 → 一覧 → 構成銘柄。
+   色は 検証済みの8色(線・棒)と、赤(強い)↔青(弱い)の発散(ヒートマップ・棒)。日本の相場の慣習に合わせ、赤が上昇・強い側。 */
+:root{
+  --bg:#f9f9f7; --surface:#fcfcfb; --fg:#0b0b0b; --fg2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --line:rgba(11,11,11,.10); --neutral:#f0efec;
+  --pos:#e66767; --neg:#6da7ec; --wash:rgba(42,120,214,.08);
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --lab-in:#e34948; --lab-thin:#eb6834; --lab-sell:#2a78d6; --lab-low:#898781;
+  --warn:#b45309; --focus:#2a78d6;
+  --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",Meiryo,system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0d0d0d; --surface:#1a1a19; --fg:#ffffff; --fg2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --line:rgba(255,255,255,.10); --neutral:#383835;
+    --pos:#b43c3c; --neg:#2a6fc9; --wash:rgba(57,135,229,.12);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --lab-in:#e66767; --lab-thin:#d95926; --lab-sell:#3987e5; --lab-low:#898781;
+    --warn:#fab219; --focus:#3987e5; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0d0d0d; --surface:#1a1a19; --fg:#ffffff; --fg2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --line:rgba(255,255,255,.10); --neutral:#383835;
+  --pos:#b43c3c; --neg:#2a6fc9; --wash:rgba(57,135,229,.12);
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --lab-in:#e66767; --lab-thin:#d95926; --lab-sell:#3987e5; --lab-low:#898781;
+  --warn:#fab219; --focus:#3987e5; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:14px/1.6 var(--sans);padding-inline:16px;padding-block:20px 48px}
+.wrap{max-width:1040px;margin:0 auto;display:flex;flex-direction:column;gap:22px}
+h1{font-size:22px;line-height:1.3;margin:0;font-weight:700;letter-spacing:.01em}
+h2{font-size:15px;margin:0;font-weight:700;text-wrap:balance}
+.note{color:var(--fg2);font-size:12px;margin:0}
+.muted{color:var(--muted)}
+.wrap>section.note{display:flex;flex-direction:column;gap:6px}
+.wrap>section.note p{margin:0;max-width:70ch}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+
+header{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:flex-end;justify-content:space-between}
+.stamp{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:12px;color:var(--fg2)}
+.btn{background:transparent;border:1px solid var(--axis);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
+.btn:hover{background:var(--wash)}
+.btn[disabled]{opacity:.5;cursor:default}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.panel-head{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between;align-items:baseline}
+.scroll{overflow-x:auto;min-width:0}
+
+/* 見立て(Claude) */
+.comment{background:var(--wash);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:6px}
+.comment .eyebrow{font-size:11px;letter-spacing:.08em;color:var(--fg2)}
+.comment .headline{font-size:16px;font-weight:700;text-wrap:balance}
+.comment p{margin:0;max-width:68ch}
+.comment details{font-size:12px;color:var(--fg2)}
+.comment details p{margin-top:6px}
+
+/* ヒーロー */
+.hero{display:grid;grid-template-columns:auto 1fr;gap:6px 28px;align-items:center}
+.hero-num{font-size:56px;line-height:1;font-weight:700;letter-spacing:-.01em}
+.hero-num small{font-size:18px;font-weight:500;color:var(--fg2);margin-left:4px}
+.hero-sub{display:flex;flex-direction:column;gap:8px;min-width:0}
+.counts{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px}
+.counts span{display:inline-flex;gap:6px;align-items:center}
+.names{font-size:13px;color:var(--fg2)}
+@media (max-width:560px){.hero{grid-template-columns:1fr}.hero-num{font-size:48px}}
+
+/* 判定タグ */
+.tag{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px}
+.tag i{font-style:normal;font-size:10px;line-height:1}
+.tag-in i{color:var(--lab-in)} .tag-thin i{color:var(--lab-thin)} .tag-sell i{color:var(--lab-sell)} .tag-low i{color:var(--lab-low)}
+.flag{color:var(--warn);font-size:11px;white-space:nowrap}
+
+/* ヒートマップ・表 */
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:12px}
+th,td{padding:5px 6px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+th{font-weight:600;color:var(--fg2);font-size:11px;line-height:1.3;vertical-align:bottom}
+th:first-child,td:first-child{text-align:left}
+tbody tr{cursor:pointer}
+.heat td{padding:0}
+.heat td.name{padding:6px 10px 6px 4px;white-space:normal;min-width:7.5em;position:sticky;left:0;background:var(--surface);z-index:1}
+.heat .cell{display:block;margin:1px;padding:6px 4px;text-align:center;border-radius:3px;
+  background:color-mix(in srgb,var(--c) calc(var(--a) * 100%),var(--neutral))}
+.heat .cell.p{--c:var(--pos)} .heat .cell.n{--c:var(--neg)}
+tr.sel td.name,tr.sel td.sticky{font-weight:700}
+tr.sel td{box-shadow:inset 0 -2px 0 var(--s1)}
+.list td,.list th{border-bottom:1px solid var(--grid)}
+.list tbody tr:hover td,.heat tbody tr:hover td.name{background:var(--wash)}
+.list tr.sel td{background:var(--wash);box-shadow:none}
+.list td.sticky,.list th.sticky{position:sticky;left:0;background:var(--surface);z-index:1}
+.list td.wrapname{white-space:normal;min-width:8em}
+
+/* チャート共通 */
+svg text{font-family:var(--sans);fill:var(--fg2)}
+.axis-label{font-size:11px}
+.legend{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--axis);background:transparent;border-radius:14px;padding:2px 10px;font-size:12px;cursor:pointer}
+.chip[aria-pressed="true"]{border-color:var(--fg2);background:var(--wash)}
+.chip .key{width:14px;height:0;border-top:2px solid var(--muted);border-radius:1px}
+.chip[aria-pressed="false"] .key{border-top-style:dotted}
+.seg{display:inline-flex;border:1px solid var(--axis);border-radius:6px;overflow:hidden}
+.seg button{background:transparent;border:0;padding:4px 12px;font-size:12px;cursor:pointer}
+.seg button+button{border-left:1px solid var(--axis)}
+.seg button[aria-pressed="true"]{background:var(--wash);font-weight:700}
+.seg .short{display:none}
+@media (max-width:560px){.seg{display:flex;width:100%}.seg button{flex:1;padding:6px 4px}.seg .full{display:none}.seg .short{display:inline}}
+.chart{position:relative;min-width:0}
+.dim{opacity:.5;transition:opacity .15s}
+@media (prefers-reduced-motion:reduce){.dim{transition:none}}
+details.table-view{font-size:12px}
+details.table-view summary{cursor:pointer;color:var(--fg2)}
+
+/* 時価総額加重・均等加重・ETFの比較(棒) */
+.cmp{display:flex;flex-direction:column;gap:2px}
+.cmp-row{display:grid;grid-template-columns:minmax(6.5em,11em) 1fr;gap:10px;align-items:center;padding:3px 0;cursor:pointer;border-radius:4px}
+.cmp-row:hover{background:var(--wash)}
+.cmp-row.sel .cmp-name{font-weight:700}
+.cmp-name{font-size:12px;line-height:1.3}
+.cmp-track{position:relative;height:31px}
+.cmp-zero{position:absolute;top:0;bottom:0;width:1px;background:var(--axis)}
+.bar{position:absolute;height:9px}
+.bar.cw{top:1px;background:var(--s1)} .bar.ew{top:11px;background:var(--s2)} .bar.etf{top:21px;background:var(--muted)}
+.bar.p{border-radius:0 4px 4px 0} .bar.n{border-radius:4px 0 0 4px}
+.key-rect{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+
+/* 構成銘柄 */
+.minibar{position:relative;height:10px;width:96px}
+.minibar .bar{height:8px;top:1px}
+.minibar .bar.p{background:var(--pos)} .minibar .bar.n{background:var(--neg)}
+.sector-meta{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--fg2)}
+.sector-meta b{color:var(--fg);font-weight:700}
+
+/* 状態表示 */
+.state{padding:22px 4px;color:var(--fg2);font-size:13px;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.state strong{color:var(--fg)}
+.loading .panel,.loading .hero{opacity:.55}
+#tip{position:fixed;z-index:20;pointer-events:none;background:var(--surface);color:var(--fg);border:1px solid var(--axis);
+  border-radius:6px;padding:7px 10px;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,.18);max-width:240px;display:none}
+#tip .tl{font-weight:700;margin-bottom:3px}
+#tip .tr{display:flex;gap:8px;align-items:center;justify-content:space-between;white-space:nowrap}
+#tip .tr .l{display:flex;gap:6px;align-items:center;color:var(--fg2)}
+#tip .tr .v{font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums}
+#tip .k{width:12px;border-top:2px solid var(--muted)}
+</style>
+
+<div class="wrap" id="app">
+  <header>
+    <div>
+      <h1>業種別 資金動向</h1>
+      <p class="note">日本株 TOPIX-17業種。TOPIX構成銘柄(約500銘柄)から作った業種ごとの指数と売買代金で、どこへ資金が向かっているかを見ます。</p>
+    </div>
+    <div class="stamp">
+      <span id="stamp-asof">基準日 -</span>
+      <span id="stamp-load" class="muted"></span>
+    </div>
+  </header>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <section class="comment" id="comment" hidden aria-label="Claudeの見立て">
+    <div class="eyebrow">CLAUDEの見立て</div>
+    <div class="headline" id="c-head"></div>
+    <div id="c-body"></div>
+    <details id="c-past" hidden><summary>過去の見立て</summary><div id="c-past-list"></div></details>
+  </section>
+
+  <section class="hero" id="hero" aria-label="判定の内訳"></section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>業種ヒートマップ</h2>
+      <p class="note">色は各列の中での順位(赤=強い、青=弱い)。数値は実測値。総合スコア順。行を選ぶと下の構成銘柄が切り替わります。</p></div>
+    <div class="scroll"><table class="heat" id="heat"></table></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>相対強度 × 売買代金シェア</h2>
+      <p class="note">右上が価格も強く売買も増えている業種。円の大きさは売買代金シェア。</p></div>
+    <div class="chart" id="scatter"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>推移</h2>
+      <div class="seg" id="measure" role="group" aria-label="指標">
+        <button type="button" data-m="c" aria-pressed="true"><span class="full">相対強度(時価総額加重)</span><span class="short">時価総額</span></button>
+        <button type="button" data-m="w" aria-pressed="false"><span class="full">相対強度(均等加重)</span><span class="short">均等</span></button>
+        <button type="button" data-m="e" aria-pressed="false"><span class="full">相対強度(ETF、参考)</span><span class="short">ETF</span></button>
+        <button type="button" data-m="s" aria-pressed="false"><span class="full">売買代金シェア</span><span class="short">売買代金</span></button>
+      </div>
+    </div>
+    <p class="note" id="measure-note"></p>
+    <div class="legend" id="legend"></div>
+    <div class="chart" id="lines"></div>
+    <details class="table-view"><summary>数値で見る</summary><div class="scroll"><table class="list" id="lines-table"></table></div></details>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>加重方法の比較(相対強度20日)</h2>
+      <p class="note">時価総額加重のほうが強い業種は一部の大型株が、均等加重のほうが強い業種は構成銘柄全体が引っ張っています。</p></div>
+    <div class="legend">
+      <span class="note"><span class="key-rect" style="background:var(--s1)"></span>時価総額加重 − 全銘柄(主軸)</span>
+      <span class="note"><span class="key-rect" style="background:var(--s2)"></span>均等加重 − 全銘柄</span>
+      <span class="note"><span class="key-rect" style="background:var(--muted)"></span>業種ETF − TOPIX(参考)</span>
+    </div>
+    <div class="cmp" id="cmp"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>業種一覧</h2>
+      <p class="note">判定は相対強度(20日、時価総額加重)と売買代金シェアzの符号による簡易分類。スコアは4指標の順位平均(0-100)。</p></div>
+    <div class="scroll"><table class="list" id="list"></table></div>
+    <p class="note" id="list-note"></p>
+  </section>
+
+  <section class="panel" id="drill-panel">
+    <div class="panel-head"><h2 id="drill-title">構成銘柄</h2><div class="sector-meta" id="drill-meta"></div></div>
+    <div class="scroll" id="drill"></div>
+  </section>
+
+  <section class="note">
+    <p>売買代金は買いと売りの合計で、純流入ではありません。価格とセットで読み、外国人投資家の週次売買(JPX公表)などで裏取りしてください。</p>
+    <p>集計対象は大型株中心です。不動産・小売・サービスなど中小型が多い業種は精度が落ちます。先物・オプションのSQ、指数の入れ替え、決算期は売買代金が歪みます。</p>
+    <p>このページは共有用のスナップショットで、データはページに埋め込まれています(BigQueryへの接続は不要)。毎営業日の夕方に更新されます。</p>
+    <p>投資判断の材料の一つであり、売買の推奨ではありません。</p>
+  </section>
+</div>
+<div id="tip" role="tooltip"></div>
+<script id="snap" type="application/json">__SNAPSHOT_JSON__</script>
+
+<script>
+"use strict";
+const SNAP = JSON.parse(document.getElementById("snap").textContent);
+
+const LABELS = {
+  "資金流入": {glyph: "▲", cls: "tag-in"},
+  "買い細り": {glyph: "◆", cls: "tag-thin"},
+  "売り圧力/転換前": {glyph: "▼", cls: "tag-sell"},
+  "低調": {glyph: "●", cls: "tag-low"},
+};
+const LABEL_ORDER = ["資金流入", "買い細り", "売り圧力/転換前", "低調"];
+
+const state = {rows: [], series: {}, selected: null, measure: "c", picked: new Map(), stocks: {},
+               loadedAt: null, fetchedAt: null, busy: false};
+
+/* ---------- 小道具 ---------- */
+const $ = s => document.querySelector(s);
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return e;
+}
+const NS = "http://www.w3.org/2000/svg";
+function s(tag, attrs, ...kids) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) e.setAttribute(k, v);
+  for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return e;
+}
+const MINUS = "−";
+const sg = (v, d = 1) => { if (v == null || isNaN(v)) return "-"; const r = Number(Math.abs(v).toFixed(d)); return (r === 0 ? "" : v > 0 ? "+" : MINUS) + r.toFixed(d); };
+const fx = (v, d = 1) => v == null || isNaN(v) ? "-" : Number(v).toFixed(d);
+const pc = v => v == null || isNaN(v) ? "-" : Math.round(v) + "%";
+const jst = d => new Intl.DateTimeFormat("ja-JP", {timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"}).format(d);
+
+function niceTicks(lo, hi, n = 5) {
+  if (!(hi > lo)) { hi = lo + 1; }
+  const raw = (hi - lo) / n, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  const step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
+  const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, out = [];
+  for (let v = a; v <= b + step / 2; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+/* ---------- ツールチップ ---------- */
+const tip = $("#tip");
+function showTip(ev, title, rows) {
+  tip.replaceChildren(h("div", {class: "tl"}, title),
+    ...rows.map(r => h("div", {class: "tr"},
+      h("span", {class: "l"}, r.color ? h("span", {class: "k", style: "border-top-color:" + r.color}) : null, r.label),
+      h("span", {class: "v"}, r.value))));
+  tip.style.display = "block";
+  const w = tip.offsetWidth, hh = tip.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + w > innerWidth - 8) x = ev.clientX - w - 14;
+  if (y + hh > innerHeight - 8) y = ev.clientY - hh - 14;
+  tip.style.left = Math.max(8, x) + "px"; tip.style.top = Math.max(8, y) + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+
+/* ---------- スナップショットの読み込み ---------- */
+function setStatus(kind, msg) {
+  const box = $("#status");
+  box.replaceChildren();
+  if (kind === "error") box.append(h("div", {class: "state panel"}, h("strong", null, "データを読み込めません"), h("span", null, msg || "")));
+}
+function load() {
+  if (!SNAP.rows || !SNAP.rows.length) { setStatus("error", "このページにはデータが入っていません。"); return; }
+  state.rows = SNAP.rows;
+  state.loadedAt = SNAP.generated_at ? new Date(SNAP.generated_at) : null;
+  state.selected = state.rows[0].sector;
+  state.rows.slice(0, 5).forEach(r => pick(r.sector, true));
+  state.series = SNAP.series || {};
+  renderAll();
+}
+function loadStocks(sector) {
+  if (!state.stocks[sector]) {
+    const d = (SNAP.stocks || {})[sector];
+    if (d) {
+      const list = d.list.map(x => ({code: x.code, name: x.name, pts: x.pts.map(p => ({d: SNAP.dates[p[0]], a: p[1], t: p[2]}))}));
+      list.total = d.total || list.length;
+      state.stocks[sector] = list;
+    } else state.stocks[sector] = [];
+  }
+  if (state.selected === sector) renderDrill();
+}
+
+/* ---------- 選択 ---------- */
+function select(sector) {
+  if (state.selected === sector) return;
+  state.selected = sector;
+  if (!state.picked.has(sector)) pick(sector, true);
+  renderHeat(); renderScatter(); renderLines(); renderCmp(); renderList();
+  loadStocks(sector);
+}
+function nextSlot() {
+  const used = new Set(state.picked.values());
+  for (let i = 1; i <= 8; i++) if (!used.has(i)) return i;
+  return 0;
+}
+function pick(sector, force) {
+  if (state.picked.has(sector)) { if (!force) state.picked.delete(sector); return true; }
+  const slot = nextSlot();
+  if (!slot) return false;
+  state.picked.set(sector, slot); return true;
+}
+
+/* ---------- 描画: 見出し・ヒーロー ---------- */
+const tagEl = lab => {
+  const l = LABELS[lab] || {glyph: "–", cls: "tag-low"};
+  return h("span", {class: "tag " + l.cls}, h("i", {"aria-hidden": "true"}, l.glyph), lab || "-");
+};
+function renderStamp() {
+  const r0 = state.rows[0];
+  $("#stamp-asof").textContent = "基準日 " + (r0 ? r0.as_of : "-");
+  const parts = [];
+  if (state.loadedAt) parts.push("データ更新 " + jst(state.loadedAt) + "(毎営業日の夕方に更新)");
+  $("#stamp-load").textContent = parts.join(" / ");
+}
+function renderHero() {
+  const box = $("#hero"); box.replaceChildren();
+  const n = state.rows.length, cnt = {}; LABEL_ORDER.forEach(k => cnt[k] = []);
+  state.rows.forEach(r => { (cnt[r.cw_label] || (cnt[r.cw_label] = [])).push(r.sector); });
+  const inflow = cnt["資金流入"] || [];
+  box.append(
+    h("div", {class: "hero-num"}, String(inflow.length), h("small", null, "/ " + n + " 業種が資金流入")),
+    h("div", {class: "hero-sub"},
+      h("div", {class: "counts"}, LABEL_ORDER.map(k => h("span", null, tagEl(k), h("b", null, String((cnt[k] || []).length))))),
+      h("div", {class: "names"}, inflow.length ? "資金流入: " + inflow.join("、") : "資金流入と判定された業種はありません")));
+}
+
+/* ---------- 描画: ヒートマップ ---------- */
+const HEAT = [
+  ["cw_rel_5d", "相対強度\n5日", v => sg(v)], ["cw_rel_20d", "相対強度\n20日", v => sg(v)], ["ew_rel_20d", "均等加重\n相対20日", v => sg(v)],
+  ["share_z", "売買代金\nシェアz", v => sg(v)], ["turn_ratio_1d", "売買代金\n当日/20日", v => fx(v, 2) + "x"],
+  ["up_turn_ratio", "上昇日の\n売買比率", v => pc(v * 100)], ["breadth_ma25", "25日線上\n銘柄比率", v => pc(v)],
+  ["rel_20d", "ETF参考\n20日", v => sg(v)],
+];
+function rankPct(vals) {
+  const idx = vals.map((v, i) => [v, i]).filter(x => x[0] != null && !isNaN(x[0])).sort((a, b) => a[0] - b[0]);
+  const out = new Array(vals.length).fill(null), m = idx.length;
+  idx.forEach((x, k) => { out[x[1]] = m > 1 ? k / (m - 1) : 0.5; });
+  return out;
+}
+function renderHeat() {
+  const t = $("#heat"); t.replaceChildren();
+  const ranks = HEAT.map(c => rankPct(state.rows.map(r => r[c[0]])));
+  t.append(h("thead", null, h("tr", null, h("th", {scope: "col"}, "業種"),
+    HEAT.map(c => h("th", {scope: "col"}, c[1].split("\n").flatMap((x, i) => i ? [h("br"), x] : [x]))))));
+  t.append(h("tbody", null, state.rows.map((r, ri) => h("tr", {class: r.sector === state.selected ? "sel" : "", tabindex: "0",
+      onclick: () => select(r.sector), onkeydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(r.sector); } }},
+    h("td", {class: "name"}, r.sector),
+    HEAT.map((c, ci) => {
+      const v = r[c[0]], k = ranks[ci][ri];
+      if (v == null || isNaN(v) || k == null) return h("td", null, h("span", {class: "cell", style: "--a:0"}, "-"));
+      const tt = (k - 0.5) * 2;
+      return h("td", null, h("span", {class: "cell " + (tt >= 0 ? "p" : "n"), style: "--a:" + (Math.abs(tt) * 0.9).toFixed(3)}, c[2](v)));
+    })))));
+}
+
+/* ---------- 描画: 散布図 ---------- */
+function renderScatter() {
+  const box = $("#scatter"); box.replaceChildren();
+  const rows = state.rows.filter(r => r.cw_rel_20d != null && r.share_z != null);
+  if (!rows.length) return;
+  const W = Math.max(280, box.clientWidth || 600), H = W < 520 ? 380 : 460, m = {l: 44, r: 16, t: 14, b: 40};
+  const xs = rows.map(r => r.cw_rel_20d), ys = rows.map(r => r.share_z);
+  const px = (lo, hi) => { const p = (hi - lo) * 0.1 || 1; return [Math.min(lo, 0) - p, Math.max(hi, 0) + p]; };
+  const [x0, x1] = px(Math.min(...xs), Math.max(...xs)), [y0, y1] = px(Math.min(...ys), Math.max(...ys));
+  const X = v => m.l + (v - x0) / (x1 - x0) * (W - m.l - m.r), Y = v => H - m.b - (v - y0) / (y1 - y0) * (H - m.t - m.b);
+  const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "相対強度と売買代金シェアzの散布図"});
+  niceTicks(x0, x1, W < 520 ? 4 : 6).forEach(v => { if (v < x0 || v > x1) return;
+    svg.append(s("line", {x1: X(v), x2: X(v), y1: m.t, y2: H - m.b, stroke: "var(--grid)"}), s("text", {class: "axis-label", x: X(v), y: H - m.b + 16, "text-anchor": "middle"}, sg(v, 0).replace("+", ""))); });
+  niceTicks(y0, y1, 5).forEach(v => { if (v < y0 || v > y1) return;
+    svg.append(s("line", {x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: "var(--grid)"}), s("text", {class: "axis-label", x: m.l - 6, y: Y(v) + 4, "text-anchor": "end"}, sg(v, 0).replace("+", ""))); });
+  svg.append(s("line", {x1: X(0), x2: X(0), y1: m.t, y2: H - m.b, stroke: "var(--axis)"}), s("line", {x1: m.l, x2: W - m.r, y1: Y(0), y2: Y(0), stroke: "var(--axis)"}));
+  svg.append(s("text", {class: "axis-label", x: (m.l + W - m.r) / 2, y: H - 6, "text-anchor": "middle"}, "相対強度 20日(時価総額加重の業種指数 − 全銘柄, %pt)"),
+    s("text", {class: "axis-label", transform: `translate(12 ${(m.t + H - m.b) / 2}) rotate(-90)`, "text-anchor": "middle"}, "売買代金シェアz"));
+  const corner = (txt, x, y, anchor) => svg.append(s("text", {class: "axis-label", x, y, "text-anchor": anchor, opacity: .75, "font-weight": 700}, txt));
+  corner("資金流入", W - m.r - 4, m.t + 12, "end"); corner("売り圧力/転換前", m.l + 4, m.t + 12, "start");
+  corner("買い細り", W - m.r - 4, H - m.b - 6, "end"); corner("低調", m.l + 4, H - m.b - 6, "start");
+  const rad = r => 4 + Math.sqrt(Math.max(r.share_pct || 0, 0)) * 2.2;
+  const placed = rows.map(r => { const rr = rad(r); return {x: X(r.cw_rel_20d) - rr, y: Y(r.share_z) - rr, w: rr * 2, h: rr * 2}; });   // 点そのものも避ける
+  const free = b => !placed.some(p => b.x < p.x + p.w && b.x + b.w > p.x && b.y < p.y + p.h && b.y + b.h > p.y) && b.x >= m.l + 2 && b.x + b.w <= W - 4 && b.y >= m.t && b.y + b.h <= H - m.b - 2;
+  const ordered = rows.slice().sort((a, b) => (b.sector === state.selected) - (a.sector === state.selected) || rad(b) - rad(a));
+  const dots = [], labels = [];
+  ordered.forEach(r => {
+    const cx = X(r.cw_rel_20d), cy = Y(r.share_z), rr = rad(r), tw = r.sector.length * 11.5 + 4, th = 14;
+    const cands = [[cx + rr + 4, cy - th / 2, "start"], [cx - rr - 4 - tw, cy - th / 2, "end"], [cx - tw / 2, cy - rr - th - 2, "middle"], [cx - tw / 2, cy + rr + 2, "middle"]];
+    let pos = null;
+    for (const c of cands) { const b = {x: c[0], y: c[1], w: tw, h: th}; if (free(b)) { placed.push(b); pos = c; break; } }
+    const isSel = r.sector === state.selected;
+    dots.push(s("circle", {cx, cy, r: rr, fill: isSel ? "var(--s2)" : "var(--s1)", "fill-opacity": isSel ? 1 : .8, stroke: "var(--surface)", "stroke-width": 2}));
+    if (pos) {
+      const tx = pos[2] === "start" ? pos[0] : pos[2] === "end" ? pos[0] + tw : pos[0] + tw / 2;
+      labels.push(s("text", {x: tx, y: pos[1] + 11, "text-anchor": pos[2], class: "axis-label", style: "fill:var(--fg);" + (isSel ? "font-weight:700" : ""), "pointer-events": "none"}, r.sector));
+    }
+    const hit = s("circle", {cx, cy, r: Math.max(rr, 14), fill: "transparent", style: "cursor:pointer", tabindex: "0", role: "button", "aria-label": r.sector});
+    const over = e => showTip(e, r.sector, [{label: "判定", value: r.cw_label}, {label: "相対強度20日", value: sg(r.cw_rel_20d) + "pt"}, {label: "シェアz", value: sg(r.share_z, 2)}, {label: "売買代金シェア", value: fx(r.share_pct) + "%"}]);
+    hit.addEventListener("pointermove", over); hit.addEventListener("pointerleave", hideTip); hit.addEventListener("focus", () => { const b = hit.getBoundingClientRect(); over({clientX: b.left + b.width / 2, clientY: b.top}); }); hit.addEventListener("blur", hideTip);
+    hit.addEventListener("click", () => select(r.sector)); hit.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(r.sector); } });
+    dots.push(hit);
+  });
+  // 円→ラベル→当たり判定の順(当たり判定を最前面に)
+  const circles = dots.filter((_, i) => i % 2 === 0), hits = dots.filter((_, i) => i % 2 === 1);
+  svg.append(...circles, ...labels, ...hits);
+  box.append(svg);
+}
+
+/* ---------- 描画: 推移 ---------- */
+const MEAS = {
+  c: {key: "c", note: "構成銘柄の調整後終値から作った時価総額加重の業種指数 ÷ 全銘柄の時価総額加重指数を、期首(約120営業日前)=100に揃えたもの。右肩上がりは全銘柄より強い状態です。", fmt: v => fx(v, 1)},
+  w: {key: "w", note: "構成銘柄の均等加重の業種指数 ÷ 全銘柄の均等加重指数。期首=100。大型株に偏らない、構成銘柄全体の動きです。", fmt: v => fx(v, 1)},
+  e: {key: "e", note: "参考: 業種ETF ÷ TOPIX連動ETF。期首=100。", fmt: v => fx(v, 1)},
+  s: {key: "s", note: "構成銘柄の売買代金を業種別に合算したシェア(5日平均、%)。", fmt: v => fx(v, 1) + "%"},
+};
+function renderLegend() {
+  const box = $("#legend"); box.replaceChildren();
+  state.rows.forEach(r => {
+    const slot = state.picked.get(r.sector), on = !!slot;
+    box.append(h("button", {class: "chip", type: "button", "aria-pressed": on ? "true" : "false", onclick: () => {
+      if (!on && !nextSlot()) { $("#measure-note").textContent = "同時に表示できるのは8業種までです。先に外してください。"; return; }
+      pick(r.sector, false); renderLines();
+    }}, h("span", {class: "key", style: on ? "border-top-color:var(--s" + slot + ")" : null}), r.sector));
+  });
+}
+function renderLines() {
+  $("#measure-note").textContent = MEAS[state.measure].note;
+  renderLegend();
+  const box = $("#lines"); box.replaceChildren();
+  const m = MEAS[state.measure], active = [...state.picked.entries()].filter(([k]) => state.series[k]);
+  if (!active.length) { box.append(h("div", {class: "state"}, state.series && Object.keys(state.series).length ? "表示する業種を選んでください。" : "推移を読み込んでいます…")); renderLinesTable(); return; }
+  const W = Math.max(280, box.clientWidth || 600), H = W < 520 ? 300 : 360, mg = {l: 46, r: 14, t: 12, b: 28};
+  const dates = state.series[active[0][0]].map(p => p.d);
+  const vals = active.flatMap(([k]) => state.series[k].map(p => p[m.key]).filter(v => v != null));
+  let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
+  const ticks = niceTicks(lo, hi, 5); lo = Math.min(lo, ticks[0]); hi = Math.max(hi, ticks[ticks.length - 1]);
+  const X = i => mg.l + (dates.length > 1 ? i / (dates.length - 1) : 0) * (W - mg.l - mg.r), Y = v => H - mg.b - (v - lo) / (hi - lo) * (H - mg.t - mg.b);
+  const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "業種別の推移"});
+  ticks.forEach(v => svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: Y(v), y2: Y(v), stroke: "var(--grid)"}), s("text", {class: "axis-label", x: mg.l - 6, y: Y(v) + 4, "text-anchor": "end"}, state.measure === "s" ? fx(v, 0) : fx(v, 0))));
+  const nx = W < 520 ? 4 : 6;
+  for (let k = 0; k < nx; k++) { const i = Math.round(k * (dates.length - 1) / (nx - 1)); svg.append(s("text", {class: "axis-label", x: X(i), y: H - 8, "text-anchor": k === 0 ? "start" : k === nx - 1 ? "end" : "middle"}, dates[i].slice(5).replace("-", "/"))); }
+  if (state.measure !== "s" && 100 > lo && 100 < hi) svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: Y(100), y2: Y(100), stroke: "var(--axis)"}));
+  active.forEach(([k, slot]) => {
+    const pts = state.series[k]; let d = "", on = false;
+    pts.forEach((p, i) => { const v = p[m.key]; if (v == null) { on = false; return; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1); on = true; });
+    svg.append(s("path", {d, fill: "none", stroke: "var(--s" + slot + ")", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"}));
+    const li = pts.length - 1, lv = pts[li] && pts[li][m.key];
+    if (lv != null) svg.append(s("circle", {cx: X(li), cy: Y(lv), r: 4, fill: "var(--s" + slot + ")", stroke: "var(--surface)", "stroke-width": 2}));
+  });
+  const cross = s("line", {y1: mg.t, y2: H - mg.b, stroke: "var(--fg2)", "stroke-width": 1, visibility: "hidden"});
+  const ov = s("rect", {x: mg.l, y: mg.t, width: W - mg.l - mg.r, height: H - mg.t - mg.b, fill: "transparent", style: "cursor:crosshair"});
+  const at = e => {
+    const r = ov.getBoundingClientRect(), f = (e.clientX - r.left) / r.width, i = Math.max(0, Math.min(dates.length - 1, Math.round(f * (dates.length - 1))));
+    cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("visibility", "visible");
+    const rows = active.map(([k, slot]) => ({label: k, color: "var(--s" + slot + ")", v: state.series[k][i] ? state.series[k][i][m.key] : null})).filter(x => x.v != null)
+      .sort((a, b) => b.v - a.v).map(x => ({label: x.label, color: x.color, value: m.fmt(x.v)}));
+    showTip(e, dates[i], rows);
+  };
+  ov.addEventListener("pointermove", at); ov.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+  svg.append(cross, ov); box.append(svg);
+  renderLinesTable();
+}
+function renderLinesTable() {
+  const t = $("#lines-table"); t.replaceChildren();
+  const m = MEAS[state.measure], rows = state.rows.filter(r => state.series[r.sector]);
+  if (!rows.length) return;
+  const latest = r => { const a = state.series[r.sector]; return a[a.length - 1][m.key]; }, ago = (r, n) => { const a = state.series[r.sector]; const p = a[Math.max(0, a.length - 1 - n)]; return p ? p[m.key] : null; };
+  const d = rows[0] && state.series[rows[0].sector].slice(-1)[0].d;
+  t.append(h("thead", null, h("tr", null, h("th", null, "業種"), h("th", null, "最新(" + (d || "-") + ")"), h("th", null, "5営業日前"), h("th", null, "20営業日前"))),
+    h("tbody", null, rows.map(r => h("tr", {class: r.sector === state.selected ? "sel" : "", onclick: () => select(r.sector)},
+      h("td", null, r.sector), h("td", null, m.fmt(latest(r))), h("td", null, ago(r, 5) == null ? "-" : m.fmt(ago(r, 5))), h("td", null, ago(r, 20) == null ? "-" : m.fmt(ago(r, 20)))))));
+}
+
+/* ---------- 描画: 加重方法の比較 ---------- */
+function renderCmp() {
+  const box = $("#cmp"); box.replaceChildren();
+  const rows = state.rows.filter(r => r.cw_rel_20d != null).slice().sort((a, b) => b.cw_rel_20d - a.cw_rel_20d);
+  if (!rows.length) return;
+  const mx = Math.max(...rows.flatMap(r => [Math.abs(r.cw_rel_20d), Math.abs(r.ew_rel_20d || 0), Math.abs(r.rel_20d || 0)])) * 1.05 || 1;
+  rows.forEach(r => {
+    const mk = (cls, v) => { const w = Math.abs(v) / mx * 50; return h("div", {class: "bar " + cls + (v >= 0 ? " p" : " n"), style: v >= 0 ? `left:50%;width:${w}%` : `right:50%;width:${w}%`}); };
+    const row = h("div", {class: "cmp-row" + (r.sector === state.selected ? " sel" : ""), tabindex: "0"},
+      h("div", {class: "cmp-name"}, r.sector, (r.ew_flag || r.etf_flag) ? h("span", {class: "flag"}, " ⚠") : null),
+      h("div", {class: "cmp-track"}, h("div", {class: "cmp-zero", style: "left:50%"}), mk("cw", r.cw_rel_20d), mk("ew", r.ew_rel_20d || 0), mk("etf", r.rel_20d || 0)));
+    const over = e => showTip(e, r.sector, [{label: "時価総額加重 − 全銘柄", value: sg(r.cw_rel_20d) + "pt", color: "var(--s1)"}, {label: "均等加重 − 全銘柄", value: sg(r.ew_rel_20d) + "pt", color: "var(--s2)"}, {label: "業種ETF − TOPIX(参考)", value: sg(r.rel_20d) + "pt", color: "var(--muted)"}].concat([r.ew_flag, r.etf_flag].filter(Boolean).map(x => ({label: "注意", value: x}))));
+    row.addEventListener("pointermove", over); row.addEventListener("pointerleave", hideTip);
+    row.addEventListener("click", () => select(r.sector)); row.addEventListener("keydown", e => { if (e.key === "Enter") select(r.sector); });
+    box.append(row);
+  });
+}
+
+/* ---------- 描画: 一覧 ---------- */
+function renderList() {
+  const t = $("#list"); t.replaceChildren();
+  const heads = ["順位", "業種", "判定", "スコア", "相対20日\n(時価総額加重)", "相対20日\n(均等加重)", "相対20日\n(ETF参考)", "注意", "シェアz", "25日線上", "銘柄数", "ETF終値−基準価額\n20日(pt)"];
+  t.append(h("thead", null, h("tr", null, heads.map((x, i) => h("th", {scope: "col", class: i === 1 ? "sticky" : ""}, x.split("\n").flatMap((y, j) => j ? [h("br"), y] : [y]))))));
+  t.append(h("tbody", null, state.rows.map(r => h("tr", {class: r.sector === state.selected ? "sel" : "", tabindex: "0", onclick: () => select(r.sector),
+      onkeydown: e => { if (e.key === "Enter") select(r.sector); }},
+    h("td", null, String(r.rank)), h("td", {class: "sticky wrapname"}, r.sector), h("td", {style: "text-align:left"}, tagEl(r.cw_label)), h("td", null, fx(r.score, 0)),
+    h("td", null, sg(r.cw_rel_20d)), h("td", null, sg(r.ew_rel_20d)), h("td", null, sg(r.rel_20d)),
+    h("td", {style: "text-align:left"}, [r.ew_flag, r.etf_flag].filter(Boolean).map(x => h("span", {class: "flag", style: "display:block"}, "⚠ " + x))),
+    h("td", null, sg(r.share_z, 2)), h("td", null, pc(r.breadth_ma25)), h("td", null, String(r.n_stocks)),
+    h("td", null, r.dev_20d == null ? "-" : sg(r.dev_20d, 2), r.nav_flag ? h("span", {class: "flag"}, " ⚠ " + r.nav_flag) : null)))));
+  const nav = state.rows.map(r => r.nav_date).filter(Boolean).sort().pop();
+  $("#list-note").textContent = "相対強度は、構成銘柄から作った時価総額加重の業種指数を全銘柄の同じ指数と比べたものです。ウエイトはJPX公表のTOPIXウエイト(月末)を値動きで動かしています。均等加重またはETFと符号が食い違う業種に注意を付けています。" +
+    (nav ? " ETFの終値と基準価額(分配金再投資)の突き合わせ基準日: " + nav + "。差が0.5ptを超える、または符号が食い違う業種に⚠を付けています。" : " 基準価額を取得できなかったため、終値のみで算出しています。");
+}
+
+/* ---------- 描画: 構成銘柄 ---------- */
+function spark(vals) {
+  const W = 96, H = 26, lo = Math.min(...vals), hi = Math.max(...vals), sp = hi - lo || 1;
+  const X = i => 3 + i / (vals.length - 1) * (W - 6), Y = v => H - 4 - (v - lo) / sp * (H - 8);
+  const d = vals.map((v, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1)).join("");
+  return s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true"},
+    s("path", {d, fill: "none", stroke: "var(--s1)", "stroke-width": 1.75, "stroke-linejoin": "round", "stroke-linecap": "round"}),
+    s("circle", {cx: X(vals.length - 1), cy: Y(vals[vals.length - 1]), r: 2.5, fill: "var(--s1)"}));
+}
+function renderDrill(loading) {
+  const sec = state.selected, r = state.rows.find(x => x.sector === sec), box = $("#drill");
+  $("#drill-title").textContent = sec ? "構成銘柄: " + sec : "構成銘柄";
+  const meta = $("#drill-meta"); meta.replaceChildren();
+  if (r) meta.append(tagEl(r.cw_label), h("span", null, "スコア ", h("b", null, fx(r.score, 0))), h("span", null, "相対20日 ", h("b", null, sg(r.cw_rel_20d) + "pt")),
+    h("span", null, "均等加重 ", h("b", null, sg(r.ew_rel_20d) + "pt")), h("span", null, "ETF参考 ", h("b", null, sg(r.rel_20d) + "pt")));
+  box.replaceChildren();
+  const d = state.stocks[sec];
+  if (loading || d === undefined) { box.append(h("div", {class: "state"}, "構成銘柄を読み込んでいます…")); return; }
+  if (!d.length) { box.append(h("div", {class: "state"}, "この業種の銘柄データがありません。")); return; }
+  const calc = d.map(x => {
+    const a = x.pts.slice().sort((p, q) => p.d < q.d ? 1 : -1);          // 新しい順
+    const ret = n => a.length > n && a[n].a ? (a[0].a / a[n].a - 1) * 100 : null;
+    const prev = a.slice(1, 21).map(p => p.t).filter(v => v != null), avg = prev.length ? prev.reduce((u, v) => u + v, 0) / prev.length : null;
+    return {code: x.code, name: x.name, last: a[0] ? a[0].d : null, r5: ret(5), r20: ret(20), r60: ret(60), turn: a[0] ? a[0].t : null, ratio: avg ? a[0].t / avg : null, line: a.slice().reverse().map(p => p.a)};
+  }).sort((p, q) => (q.r20 ?? -1e9) - (p.r20 ?? -1e9));
+  const mx = Math.max(...calc.map(c => Math.abs(c.r20 || 0)), 1);
+  const t = h("table", {class: "list"},
+    h("thead", null, h("tr", null, ["銘柄", "60日の推移", "5日", "20日", "20日の強弱", "60日", "売買代金\n(億円)", "当日/20日"].map((x, i) => h("th", {scope: "col", class: i === 0 ? "sticky" : ""}, x.split("\n").flatMap((y, j) => j ? [h("br"), y] : [y]))))),
+    h("tbody", null, calc.map(c => h("tr", {style: "cursor:default"},
+      h("td", {class: "sticky wrapname"}, c.name, h("span", {class: "muted"}, " " + c.code)),
+      h("td", {style: "text-align:left"}, c.line.length > 1 ? spark(c.line) : "-"),
+      h("td", null, sg(c.r5)), h("td", null, sg(c.r20)),
+      h("td", null, h("div", {class: "minibar"}, h("div", {class: "cmp-zero", style: "left:50%"}), c.r20 == null ? null : h("div", {class: "bar " + (c.r20 >= 0 ? "p" : "n"), style: c.r20 >= 0 ? `left:50%;width:${Math.abs(c.r20) / mx * 50}%` : `right:50%;width:${Math.abs(c.r20) / mx * 50}%`}))),
+      h("td", null, sg(c.r60)), h("td", null, c.turn == null ? "-" : fx(c.turn / 1e8, 1)), h("td", null, c.ratio == null ? "-" : fx(c.ratio, 2) + "x")))));
+  box.append(t, h("p", {class: "note", style: "margin-top:8px"}, (d.total > d.length ? "構成銘柄" + d.total + "銘柄のうち、直近20日の売買代金が大きい" + d.length + "銘柄を表示しています。" : "") +
+    "騰落率は調整後終値ベース(%)。最新日: " + (calc[0] && calc[0].last || "-") + "。20日の強弱の棒は、表示中の銘柄の中での相対的な大きさです。"));
+}
+
+/* ---------- Claudeの見立て(スナップショットに同梱) ---------- */
+function renderComment(items) {
+  const docs = (items || []).filter(x => x && x.headline).sort((a, b) => String(b.as_of).localeCompare(String(a.as_of)));
+  const sec = $("#comment");
+  if (!docs.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const c = docs[0];
+  $("#c-head").textContent = (c.as_of ? c.as_of + " " : "") + c.headline;
+  $("#c-body").replaceChildren(...String(c.body || "").split("\n").filter(Boolean).map(p => h("p", null, p)));
+  const past = docs.slice(1, 5), pd = $("#c-past");
+  pd.hidden = !past.length;
+  $("#c-past-list").replaceChildren(...past.map(p => h("div", null, h("p", {style: "margin-top:8px"}, h("b", null, (p.as_of || "") + " " + p.headline)), ...String(p.body || "").split("\n").filter(Boolean).map(x => h("p", null, x)))));
+}
+
+/* ---------- 全体 ---------- */
+function renderAll() { renderStamp(); renderHero(); renderHeat(); renderScatter(); renderLegend(); renderLines(); renderCmp(); renderList(); renderDrill(); }
+
+$("#measure").addEventListener("click", e => {
+  const b = e.target.closest("button[data-m]"); if (!b) return;
+  state.measure = b.dataset.m;
+  document.querySelectorAll("#measure button").forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+  renderLines();
+});
+let rt = 0;
+new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if (state.rows.length) { renderScatter(); renderLines(); } }, 120); }).observe(document.body);
+
+(function init() {
+  renderComment(SNAP.comments);
+  load();
+  loadStocks(state.selected);
+})();
+</script>
