@@ -5,7 +5,10 @@
   売買側 ... 構成銘柄の売買代金を業種別に合算したもの
             (業種ETF自体の売買代金は薄くノイズが大きいため使わない)
   広がり ... 業種内の上昇銘柄比率、25日線上の銘柄比率
-  銘柄指数 ... 構成銘柄の調整後終値から作る均等加重の業種指数(段階1: ETFと並べて検証中)
+  銘柄指数 ... 構成銘柄の調整後終値から作る業種指数
+            均等加重(ew_*) ... 全銘柄では実質的に中小型株の動きを表す(補助)
+            時価総額加重(cw_*) ... JPX公表のTOPIXウエイト(浮動株調整済み)を値動きで動かして使う。
+                                   銘柄リストにウエイト(weight列)があるときだけ計算する
 """
 from dataclasses import dataclass
 
@@ -31,6 +34,7 @@ class Result:
     nav_as_of: pd.Timestamp | None = None   # 基準価額の最新の突き合わせ日(取得できなければNone)
     rs_line_ew: pd.DataFrame | None = None  # 均等加重の業種指数/全銘柄均等加重 を直近で100に揃えたもの
     outliers: list | None = None            # 誤データとして除外した (日付, 銘柄, 日次リターン)
+    rs_line_cw: pd.DataFrame | None = None  # 時価総額加重の業種指数/全銘柄時価総額加重 を直近で100に揃えたもの
 
 
 def _stock_returns(adj: pd.DataFrame) -> tuple[pd.DataFrame, list]:
@@ -49,6 +53,29 @@ def _ew_index(r: pd.DataFrame, min_ratio: float = MIN_MEMBER_RATIO) -> pd.Series
     """
     n_valid = r.notna().sum(axis=1)
     daily = r.mean(axis=1).where(n_valid >= max(1, int(np.ceil(r.shape[1] * min_ratio))), 0.0)
+    return (1 + daily.fillna(0.0)).cumprod()
+
+
+def _cw_index(r: pd.DataFrame, adj: pd.DataFrame, w: pd.Series, base_date) -> pd.Series:
+    """時価総額加重指数(初日=1)。
+
+    w は基準日 base_date 時点のウエイト(JPX公表値)。その他の日のウエイトは、
+    株数が変わらないものとして値動きで動かす: w_i(t) = w_i × P_i(t) / P_i(基準日)。
+    日々のリターン = 前日のウエイトで加重したリターンの平均(その日にリターンがある銘柄だけ)。
+    """
+    w = w.reindex(r.columns).fillna(0.0)
+    p = adj[r.columns].ffill()
+    if base_date is None:
+        base = p.iloc[-1]
+    else:   # 基準日以前の最終営業日。データが基準日より後からしかなければ初日
+        pos = p.index.searchsorted(pd.Timestamp(base_date), side="right") - 1
+        base = p.iloc[max(pos, 0)]
+    rel = p.div(base.where(base > 0))
+    wt = (rel.mul(w, axis=1)).shift(1)                      # 前日終値時点のウエイト
+    valid = r.notna() & wt.notna() & (wt > 0)
+    num = (wt * r).where(valid).sum(axis=1)
+    den = wt.where(valid).sum(axis=1)
+    daily = (num / den).where(den > 0, 0.0)
     return (1 + daily.fillna(0.0)).cumprod()
 
 
@@ -122,7 +149,9 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     n_missing = int((uni["type"] == "stock").sum() - len(stock_codes))
 
     # 銘柄カバレッジが低い日(取得途中の日など)を除外する
-    coverage = close[stock_codes].notna().mean(axis=1)
+    # 分母は「その日までに取引が始まっている銘柄」(上場から日が浅い銘柄で過去の日が除外されないように)
+    started = close[stock_codes].notna().cummax()
+    coverage = close[stock_codes].notna().sum(axis=1) / started.sum(axis=1).clip(lower=1)
     valid_dates = coverage[coverage >= MIN_COVERAGE].index
     close, turn, adj = close.loc[valid_dates], turn.loc[valid_dates], adj.loc[valid_dates]
     if len(close) < 70:
@@ -153,6 +182,20 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
         s: _ew_index(stock_ret[[c for c in stock_codes if sec_of[c] == s]])
         for s in sectors if any(sec_of[c] == s for c in stock_codes)
     })
+
+    # --- 価格(時価総額加重。JPXのウエイトがあるときだけ) ---
+    cw_all, cw_sec = None, pd.DataFrame()
+    if "weight" in stocks.columns and pd.to_numeric(stocks["weight"], errors="coerce").notna().any():
+        wts = pd.to_numeric(stocks.set_index("code")["weight"], errors="coerce").reindex(stock_codes)
+        wdate = (pd.to_datetime(stocks["weight_date"], errors="coerce").max()
+                 if "weight_date" in stocks.columns else None)
+        wdate = None if wdate is None or pd.isna(wdate) else wdate
+        cw_all = _cw_index(stock_ret, adj, wts, wdate)
+        cw_sec = pd.DataFrame({
+            s: _cw_index(stock_ret[m], adj, wts[m], wdate)
+            for s in sectors
+            if (m := [c for c in stock_codes if sec_of[c] == s]) and wts[m].fillna(0).sum() > 0
+        })
 
     # --- 銘柄単位の指標 ---
     sc = close[stock_codes]
@@ -195,6 +238,11 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
                 row[f"ew_rel_{n}d"] = ret(ix, n) - ret(ew_all, n)
             row["ew_label"] = _label(row["ew_rel_20d"], row["share_z"])
             row["ew_flag"] = "ETFと方向相違" if _sign_conflict(row["rel_20d"], row["ew_rel_20d"]) else ""
+        if s in cw_sec.columns:
+            ix = cw_sec[s]
+            for n in (5, 20, 60):
+                row[f"cw_ret_{n}d"] = ret(ix, n)
+                row[f"cw_rel_{n}d"] = ret(ix, n) - ret(cw_all, n)
         stats = (_nav_stats(close[ec], bench, nav_pv[ec])
                  if nav_pv is not None and ec in nav_pv.columns else {})
         row.update({k: stats.get(k, np.nan) for k in
@@ -216,6 +264,11 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     rs_ew = ew_sec[[s for s in summary.index if s in ew_sec.columns]].div(ew_all, axis=0).tail(120)
     rs_line_ew = rs_ew / rs_ew.iloc[0] * 100
 
+    rs_line_cw = None
+    if cw_all is not None and len(cw_sec.columns):
+        rs_cw = cw_sec[[s for s in summary.index if s in cw_sec.columns]].div(cw_all, axis=0).tail(120)
+        rs_line_cw = rs_cw / rs_cw.iloc[0] * 100
+
     nav_dates = pd.to_datetime(summary["nav_date"], errors="coerce").dropna()
     return Result(
         nav_as_of=nav_dates.max() if len(nav_dates) else None,
@@ -227,4 +280,5 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
         n_missing=n_missing,
         rs_line_ew=rs_line_ew,
         outliers=outliers,
+        rs_line_cw=rs_line_cw,
     )

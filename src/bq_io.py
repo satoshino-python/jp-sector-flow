@@ -29,6 +29,8 @@ PRICES_SCHEMA = [
 UNIVERSE_SCHEMA = [
     ("code", "STRING"), ("name", "STRING"), ("sector", "STRING"), ("type", "STRING"),
     ("loaded_at", "TIMESTAMP"),
+    # 以下は TOPIX 全銘柄化で追加(既存テーブルには ensure_tables が末尾に足す)
+    ("sector33", "STRING"), ("size", "STRING"), ("weight", "FLOAT64"), ("weight_date", "DATE"),
 ]
 
 _SUMMARY_FLOATS = [
@@ -36,6 +38,7 @@ _SUMMARY_FLOATS = [
     "turn_ratio_1d", "share_pct", "share_z", "up_turn_ratio", "breadth_ma25", "breadth_pos20",
     "ew_ret_5d", "ew_rel_5d", "ew_ret_20d", "ew_rel_20d", "ew_ret_60d", "ew_rel_60d",
     "dev_20d", "nav_noise", "rel_20d_nav", "rel_20d_same", "score",
+    "cw_ret_5d", "cw_rel_5d", "cw_ret_20d", "cw_rel_20d", "cw_ret_60d", "cw_rel_60d",
 ]
 SUMMARY_SCHEMA = (
     [("as_of", "DATE"), ("sector", "STRING"), ("rank", "INT64"),
@@ -49,7 +52,7 @@ TIMESERIES_SCHEMA = [
     ("as_of", "DATE"), ("date", "DATE"), ("sector", "STRING"),
     ("rs_etf", "FLOAT64"), ("rs_ew", "FLOAT64"),
     ("share5_pct", "FLOAT64"), ("share_z", "FLOAT64"),
-    ("loaded_at", "TIMESTAMP"),
+    ("loaded_at", "TIMESTAMP"), ("rs_cw", "FLOAT64"),
 ]
 
 TABLES = {
@@ -103,9 +106,34 @@ def _run(client, sql: str, params=None):
 
 
 def ensure_tables(client) -> None:
-    """テーブルがなければ作る(既にあれば何もしない)。DDLはクエリ料金がかからない。"""
-    for table in TABLES:
+    """テーブルがなければ作り、あれば足りない列を追加する。DDLはクエリ料金がかからない。
+
+    列の追加は末尾に足すだけ(既存の列は消さない・型も変えない)。新しい列は過去の行では NULL。
+    """
+    for table, spec in TABLES.items():
         _run(client, _ddl(table))
+        adds = ", ".join(f"ADD COLUMN IF NOT EXISTS {n} {t}" for n, t in spec["schema"])
+        _run(client, f"ALTER TABLE {fqn(table)} {adds}")
+
+
+def read_prices(client, since, codes: list[str] | None = None) -> pd.DataFrame:
+    """価格テーブルから since 以降(対象銘柄だけ)を読み出す。"""
+    from google.cloud import bigquery
+
+    where = "date >= @since" + (" AND code IN UNNEST(@codes)" if codes else "")
+    params = [bigquery.ScalarQueryParameter("since", "DATE", since)]
+    if codes:
+        params.append(bigquery.ArrayQueryParameter("codes", "STRING", list(codes)))
+    job = _run(client, f"SELECT date, code, close, adj_close, volume, turnover FROM {fqn('prices')} "
+                       f"WHERE {where}", params)
+    df = job.to_dataframe(create_bqstorage_client=False)
+    if df.empty:
+        return pd.DataFrame(columns=["date", "code", "close", "adj_close", "volume", "turnover"])
+    df["date"] = pd.to_datetime(df["date"])
+    for c in ["close", "adj_close", "volume", "turnover"]:
+        df[c] = df[c].astype("float64")
+    df["code"] = df["code"].astype(str)
+    return df.sort_values(["code", "date"]).reset_index(drop=True)
 
 
 def _bq_schema(schema):
@@ -132,11 +160,12 @@ def replace_table(client, df: pd.DataFrame, table: str) -> None:
 
 
 def merge_table(client, df: pd.DataFrame, table: str, keys: list[str],
-                compare: list[str] | None = None) -> None:
+                compare: list[str] | None = None, verify: bool = False) -> None:
     """df を一時テーブル経由で table に MERGE する。
 
     keys    ... 一致判定に使う列。一致すれば更新、なければ挿入
     compare ... 指定すると、その列のどれかが変わった行だけ更新する(loaded_at を無駄に動かさない)
+    verify  ... MERGE 後に、送った全行が同じ値でテーブルにあるかを確かめ、なければ失敗する
     """
     schema = TABLES[table]["schema"]
     names = [n for n, _ in schema]
@@ -156,5 +185,16 @@ def merge_table(client, df: pd.DataFrame, table: str, keys: list[str],
             f"VALUES ({', '.join(f'S.{c}' for c in names)})"
         )
         _run(client, sql)
+        if verify:
+            cols = compare or [n for n in names if n not in keys]
+            diff = " OR ".join(f"T.{c} IS DISTINCT FROM S.{c}" for c in cols)
+            on_t = " AND ".join(f"T.{k} = S.{k}" for k in keys)
+            row = list(_run(client,
+                f"SELECT COUNT(*) AS n, COUNTIF(T.{keys[0]} IS NULL OR {diff}) AS bad "
+                f"FROM {fqn(stage)} S LEFT JOIN {fqn(table)} T ON {on_t}").result())[0]
+            if row["n"] != len(df) or row["bad"]:
+                raise RuntimeError(f"{table}: 反映後の照合に失敗(送った{len(df)}行 / 一時テーブル{row['n']}行 / "
+                                   f"不一致{row['bad']}行)")
+            print(f"照合OK: {table} {len(df)}行")
     finally:
         client.delete_table(stage_id, not_found_ok=True)
