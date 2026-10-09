@@ -17,10 +17,15 @@ concurrency:
   group: daily-update
   cancel-in-progress: false
 
+env:
+  # 対象銘柄の範囲。topix500(Core30+Large70+Mid400)で数週間運用し、問題なければ all(TOPIX全銘柄)に変える
+  UNIVERSE_SCOPE: topix500
+
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 銘柄を増やした直後は全期間の取得が入るため長めにとる(通常は数分)
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +35,21 @@ jobs:
           cache: pip
 
       - run: pip install -r requirements.txt
+
+      # 株価の保存先は BigQuery。最初に認証し、直近分を作業用の data/prices.parquet に読み出す
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Update universe from JPX TOPIX weights
+        # 失敗しても前回の銘柄リストで続行し、最後にジョブを失敗させて気づけるようにする
+        id: universe
+        continue-on-error: true
+        run: python src/universe.py
+
+      - name: Load prices from BigQuery
+        run: python src/bq_sync.py --pull --require
 
       - name: Fetch prices (incremental)
         run: python src/fetch.py
@@ -42,34 +62,27 @@ jobs:
       - name: Build dashboard
         run: python src/dashboard.py
 
-      # --- BigQuery への反映(当面はparquetと並行。失敗してもダッシュボード公開は続けるが、最後にジョブを失敗させて気づけるようにする) ---
-      - name: Authenticate to Google Cloud
-        id: gcp_auth
-        continue-on-error: true
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Sync to BigQuery
-        id: bq
-        if: steps.gcp_auth.outcome == 'success'
-        continue-on-error: true
+      - name: Save to BigQuery
         run: python src/bq_sync.py --require
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/prices.parquet data/summary.csv docs/index.html
+          for f in data/summary.csv docs/index.html data/universe.csv data/topix_weights.csv; do
+            if [ -e "$f" ]; then git add "$f"; fi
+          done
           if git diff --cached --quiet; then
             echo "変更なし"
           else
             git commit -m "update: $(date -u +%Y-%m-%d)"
+            # 実行中に trigger/run.txt などが push されていても取り込んでから push する
+            git pull --rebase origin main
             git push
           fi
 
-      - name: Fail if BigQuery sync did not succeed
-        if: steps.gcp_auth.outcome != 'success' || steps.bq.outcome != 'success'
+      - name: Fail if universe update did not succeed
+        if: steps.universe.outcome != 'success'
         run: |
-          echo "::error::BigQueryへの反映に失敗しました(認証: ${{ steps.gcp_auth.outcome }} / 同期: ${{ steps.bq.outcome }})。ログを確認してください"
+          echo "::error::TOPIX構成銘柄の更新に失敗しました(前回の銘柄リストで実行済み)。universe.py のログを確認してください"
           exit 1
