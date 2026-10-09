@@ -6,9 +6,12 @@
             (業種ETF自体の売買代金は薄くノイズが大きいため使わない)
   広がり ... 業種内の上昇銘柄比率、25日線上の銘柄比率
   銘柄指数 ... 構成銘柄の調整後終値から作る業種指数
+            時価総額加重(cw_*) ... 【主軸】JPX公表のTOPIXウエイト(浮動株調整済み)を値動きで動かして使う。
+                                   銘柄リスト(universe.csv)にウエイト(weight列)が必要
             均等加重(ew_*) ... 全銘柄では実質的に中小型株の動きを表す(補助)
-            時価総額加重(cw_*) ... JPX公表のTOPIXウエイト(浮動株調整済み)を値動きで動かして使う。
-                                   銘柄リストにウエイト(weight列)があるときだけ計算する
+
+判定(cw_label)・スコア・順位は時価総額加重の相対強度(cw_rel_20d)を使う。
+業種ETFをTOPIX連動ETF(1306)と比べた値(rel_*、label)は、食い違いを見る参考値として残す。
 """
 from dataclasses import dataclass
 
@@ -184,18 +187,19 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     })
 
     # --- 価格(時価総額加重。JPXのウエイトがあるときだけ) ---
-    cw_all, cw_sec = None, pd.DataFrame()
-    if "weight" in stocks.columns and pd.to_numeric(stocks["weight"], errors="coerce").notna().any():
-        wts = pd.to_numeric(stocks.set_index("code")["weight"], errors="coerce").reindex(stock_codes)
-        wdate = (pd.to_datetime(stocks["weight_date"], errors="coerce").max()
-                 if "weight_date" in stocks.columns else None)
-        wdate = None if wdate is None or pd.isna(wdate) else wdate
-        cw_all = _cw_index(stock_ret, adj, wts, wdate)
-        cw_sec = pd.DataFrame({
-            s: _cw_index(stock_ret[m], adj, wts[m], wdate)
-            for s in sectors
-            if (m := [c for c in stock_codes if sec_of[c] == s]) and wts[m].fillna(0).sum() > 0
-        })
+    if "weight" not in stocks.columns or not pd.to_numeric(stocks["weight"], errors="coerce").notna().any():
+        raise ValueError("universe.csv に TOPIX ウエイト(weight列)がありません。"
+                         "python src/universe.py で銘柄リストを作り直してください。")
+    wts = pd.to_numeric(stocks.set_index("code")["weight"], errors="coerce").reindex(stock_codes)
+    wdate = (pd.to_datetime(stocks["weight_date"], errors="coerce").max()
+             if "weight_date" in stocks.columns else None)
+    wdate = None if wdate is None or pd.isna(wdate) else wdate
+    cw_all = _cw_index(stock_ret, adj, wts, wdate)
+    cw_sec = pd.DataFrame({
+        s: _cw_index(stock_ret[m], adj, wts[m], wdate)
+        for s in sectors
+        if (m := [c for c in stock_codes if sec_of[c] == s]) and wts[m].fillna(0).sum() > 0
+    })
 
     # --- 銘柄単位の指標 ---
     sc = close[stock_codes]
@@ -237,12 +241,16 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
                 row[f"ew_ret_{n}d"] = ret(ix, n)
                 row[f"ew_rel_{n}d"] = ret(ix, n) - ret(ew_all, n)
             row["ew_label"] = _label(row["ew_rel_20d"], row["share_z"])
-            row["ew_flag"] = "ETFと方向相違" if _sign_conflict(row["rel_20d"], row["ew_rel_20d"]) else ""
         if s in cw_sec.columns:
             ix = cw_sec[s]
             for n in (5, 20, 60):
                 row[f"cw_ret_{n}d"] = ret(ix, n)
                 row[f"cw_rel_{n}d"] = ret(ix, n) - ret(cw_all, n)
+            row["cw_label"] = _label(row["cw_rel_20d"], row["share_z"])
+            # 主軸(時価総額加重)と、均等加重・ETFの向きが逆の業種
+            row["ew_flag"] = ("均等加重と方向相違"
+                              if _sign_conflict(row["cw_rel_20d"], row.get("ew_rel_20d", np.nan)) else "")
+            row["etf_flag"] = "ETFと方向相違" if _sign_conflict(row["cw_rel_20d"], row["rel_20d"]) else ""
         stats = (_nav_stats(close[ec], bench, nav_pv[ec])
                  if nav_pv is not None and ec in nav_pv.columns else {})
         row.update({k: stats.get(k, np.nan) for k in
@@ -252,7 +260,8 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
 
     summary = pd.DataFrame(rows).set_index("sector")
     # 総合スコア: 4指標のパーセンタイル順位の平均(0-100)。順位付け用の簡易指標。
-    rank_cols = ["rel_20d", "share_z", "up_turn_ratio", "breadth_ma25"]
+    # 価格の指標は時価総額加重の相対強度(ETFは使わない)
+    rank_cols = ["cw_rel_20d", "share_z", "up_turn_ratio", "breadth_ma25"]
     summary["score"] = summary[rank_cols].rank(pct=True).mean(axis=1) * 100
     summary = summary.sort_values("score", ascending=False)
 
@@ -264,10 +273,8 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     rs_ew = ew_sec[[s for s in summary.index if s in ew_sec.columns]].div(ew_all, axis=0).tail(120)
     rs_line_ew = rs_ew / rs_ew.iloc[0] * 100
 
-    rs_line_cw = None
-    if cw_all is not None and len(cw_sec.columns):
-        rs_cw = cw_sec[[s for s in summary.index if s in cw_sec.columns]].div(cw_all, axis=0).tail(120)
-        rs_line_cw = rs_cw / rs_cw.iloc[0] * 100
+    rs_cw = cw_sec[[s for s in summary.index if s in cw_sec.columns]].div(cw_all, axis=0).tail(120)
+    rs_line_cw = rs_cw / rs_cw.iloc[0] * 100
 
     nav_dates = pd.to_datetime(summary["nav_date"], errors="coerce").dropna()
     return Result(
