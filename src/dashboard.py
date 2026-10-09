@@ -32,6 +32,7 @@ def fig_heatmap(summary: pd.DataFrame) -> go.Figure:
         ("rel_5d", "相対強度\n5日", lambda v: f"{v:+.1f}"),
         ("rel_20d", "相対強度\n20日", lambda v: f"{v:+.1f}"),
         ("rel_60d", "相対強度\n60日", lambda v: f"{v:+.1f}"),
+        ("ew_rel_20d", "銘柄均等\n相対20日", lambda v: f"{v:+.1f}"),
         ("share_z", "売買代金\nシェアz", lambda v: f"{v:+.1f}"),
         ("turn_ratio_1d", "売買代金\n当日/20日", lambda v: f"{v:.2f}x"),
         ("up_turn_ratio", "上昇日の\n売買比率", lambda v: f"{v * 100:.0f}%"),
@@ -74,6 +75,23 @@ def fig_scatter(summary: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_compare(summary: pd.DataFrame) -> go.Figure:
+    """業種ETFと、構成銘柄の均等加重指数の相対強度(20日)を並べる。"""
+    d = summary.sort_values("ew_rel_20d")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(y=d.index, x=d["rel_20d"], orientation="h", name="業種ETF − TOPIX",
+                         marker_color="#9aa5b1",
+                         hovertemplate="%{y}<br>ETF %{x:+.1f}pt<extra></extra>"))
+    fig.add_trace(go.Bar(y=d.index, x=d["ew_rel_20d"], orientation="h",
+                         name="銘柄均等加重 − 全銘柄均等加重", marker_color="#d62728",
+                         hovertemplate="%{y}<br>銘柄均等 %{x:+.1f}pt<extra></extra>"))
+    fig.add_vline(x=0, line_width=1, line_color="#999")
+    fig.update_xaxes(title="相対強度 20日(%pt)")
+    fig.update_layout(barmode="group", height=60 + 30 * len(d) + 60,
+                      margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=-0.12))
+    return fig
+
+
 def fig_lines(df: pd.DataFrame, order: list[str], ytitle: str, top_n: int = 5) -> go.Figure:
     fig = go.Figure()
     for i, s in enumerate(order):
@@ -100,15 +118,27 @@ def table_html(summary: pd.DataFrame) -> str:
             noise_cell = f"{r['nav_noise']:.2f}"
         else:
             nav_cell, noise_cell = "-", "-"
+        ew_label = r.get("ew_label")
+        if isinstance(ew_label, str):
+            ew_color = LABEL_COLORS.get(ew_label, "#999")
+            ew_flag = r.get("ew_flag") or ""
+            ew_mark = f" <span class='warn'>⚠ {html.escape(ew_flag)}</span>" if ew_flag else ""
+            ew_cells = (f"<td>{r['ew_rel_20d']:+.1f}</td>"
+                        f"<td class='l'><span class='tag' style='background:{ew_color}'>"
+                        f"{html.escape(ew_label)}</span>{ew_mark}</td>")
+        else:
+            ew_cells = "<td>-</td><td>-</td>"
         rows.append(
             f"<tr><td>{html.escape(s)}</td>"
             f"<td><span class='tag' style='background:{color}'>{html.escape(r['label'])}</span></td>"
-            f"<td>{r['score']:.0f}</td><td>{r['rel_20d']:+.1f}</td><td>{r['share_z']:+.2f}</td>"
+            f"<td>{r['score']:.0f}</td><td>{r['rel_20d']:+.1f}</td>{ew_cells}"
+            f"<td>{r['share_z']:+.2f}</td>"
             f"<td>{r['breadth_ma25']:.0f}%</td><td>{r['n_stocks']}</td>"
             f"<td class='l'>{nav_cell}</td><td>{noise_cell}</td></tr>"
         )
     return (
-        "<table><thead><tr><th>業種</th><th>判定</th><th>スコア</th><th>相対20日</th>"
+        "<table><thead><tr><th>業種</th><th>判定</th><th>スコア</th><th>相対20日<br>(ETF)</th>"
+        "<th>相対20日<br>(銘柄均等)</th><th>判定<br>(銘柄均等)</th>"
         "<th>シェアz</th><th>25日線上</th><th>銘柄数</th>"
         "<th>終値−基準価額<br>20日(pt)</th><th>日次ずれ<br>σ(%)</th></tr></thead><tbody>"
         + "".join(rows) + "</tbody></table>"
@@ -125,6 +155,13 @@ def build_html(res, demo: bool) -> str:
          fig_scatter(s)),
         ("相対強度の推移(対TOPIX、期首=100)", "凡例クリックで業種を追加表示。初期表示は総合スコア上位5業種。",
          fig_lines(res.rs_line, order, "ETF ÷ TOPIX")),
+        ("ETFと個別銘柄の比較(相対強度20日)",
+         "灰=業種ETFのTOPIX対比、赤=構成銘柄の均等加重指数の全銘柄均等加重対比。"
+         "ETFは時価総額加重なので、差が大きい業種は一部の大型株に動きが偏っています。",
+         fig_compare(s)),
+        ("相対強度の推移(銘柄均等加重、期首=100)",
+         "構成銘柄の調整後終値から作った均等加重指数 ÷ 全銘柄の均等加重指数。",
+         fig_lines(res.rs_line_ew, order, "業種 ÷ 全銘柄")),
         ("売買代金シェアの推移(5日平均)", "構成銘柄の売買代金を業種別に合算したシェア(%)。",
          fig_lines(res.share5 * 100, order, "シェア(%)")),
     ]
@@ -140,6 +177,10 @@ def build_html(res, demo: bool) -> str:
                    if demo else "")
     missing = (f"<p class='note'>取得できなかった銘柄: {res.n_missing}件(集計から除外)</p>"
                if res.n_missing else "")
+    if res.outliers:
+        items = ", ".join(f"{d} {c}({v * 100:+.0f}%)" for d, c, v in res.outliers[-10:])
+        missing += (f"<p class='note'>誤データの疑いで除外した日次リターン: {len(res.outliers)}件"
+                    f"(直近: {html.escape(items)})</p>")
     if res.nav_as_of is not None:
         nav_note = (f"基準価額(分配金再投資)との突き合わせ基準日: {res.nav_as_of.date()}。"
                     f"終値の20日騰落と基準価額の20日騰落の差が{DEV_WARN_PT}ptを超える、または"
@@ -163,11 +204,13 @@ th:first-child,td:first-child{{text-align:left;white-space:normal}}
 td.l{{white-space:nowrap}} .warn{{color:#b45309;font-size:11px}}
 </style></head><body>
 <h1>日本株 業種別 資金動向</h1>
-<p class="note">データ基準日: {res.as_of.date()} / 業種ETF(TOPIX-17)+主要銘柄の売買代金集計 / 投資判断の材料の一つであり、売買の推奨ではありません</p>
+<p class="note">データ基準日: {res.as_of.date()} / 業種ETF(TOPIX-17)+主要銘柄の売買代金・均等加重指数 / 投資判断の材料の一つであり、売買の推奨ではありません</p>
 {demo_banner}
 {''.join(parts)}
 <section><h2>業種一覧</h2>
-<p class="note">判定は相対強度(20日)と売買代金シェアzの符号による簡易分類。スコアは4指標の順位平均(0-100)。</p>
+<p class="note">判定は相対強度(20日)と売買代金シェアzの符号による簡易分類。スコアは4指標の順位平均(0-100)。
+「判定(銘柄均等)」は相対強度を銘柄均等加重に置き換えた場合の判定で、検証用です(スコア・並び順はETFベースのまま)。
+ETFと銘柄均等で相対強度の符号が食い違う業種に⚠を付けています。</p>
 <div class="wrap">{table_html(s)}</div>
 <p class="note">{nav_note}</p>{missing}</section>
 <section><h2>読み方の注意</h2>
