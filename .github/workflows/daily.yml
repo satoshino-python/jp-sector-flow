@@ -2,8 +2,11 @@ name: daily-update
 
 on:
   schedule:
-    # 平日 16:30 JST (= 07:30 UTC)。東証の大引けは15:30。実行は数分〜十数分遅れることがある
-    - cron: "30 7 * * 1-5"
+    # 平日 16:37 JST (= 07:37 UTC)。東証の大引けは15:30。
+    # GitHub の cron は毎時0分・30分に混み、遅れたり飛ばされたりするので、混まない分(37)にずらし、
+    # 20分後(16:57 JST)にもう一度かける。2回目は gate ジョブが、当日分が入っていればスキップする
+    - cron: "37 7 * * 1-5"
+    - cron: "57 7 * * 1-5"
   workflow_dispatch: {}   # 手動実行用
   push:
     # trigger/run.txt を更新してpushすると再実行される(自動化からの再実行用。gh が使えない環境向け)
@@ -22,7 +25,28 @@ env:
   UNIVERSE_SCOPE: topix500
 
 jobs:
+  gate:
+    # スケジュール起動のとき、当日分がすでに BigQuery に入っていれば本体をスキップする(手動・pushでは常に実行)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install google-cloud-bigquery pandas
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Check whether today is already loaded
+        id: check
+        run: python src/gate.py
+
   update:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-latest
     # 銘柄を増やした直後は全期間の取得が入るため長めにとる(通常は数分)
     timeout-minutes: 45
