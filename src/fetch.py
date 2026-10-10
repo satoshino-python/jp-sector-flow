@@ -12,6 +12,8 @@ parquet はリポジトリにはコミットしない(保存先の正は BigQuer
     close     ... 終値(分割調整のみ)。売買代金の計算に使う
     adj_close ... 調整後終値(分割+配当調整)。リターンの計算に使う
     volume, turnover(= close × volume)
+    open, high, low ... 始値・高値・安値(終値と同じく分割調整のみ)。ローソク足に使う。
+                       配当調整後の水準にするには × (adj_close / close)
 
 差分更新の注意:
     Yahooは分割や配当があると「過去の」値まで遡って書き換える。直近だけ取り直して
@@ -47,7 +49,10 @@ CHUNK = 150             # 1回の取得でまとめる銘柄数
 CHUNK_WAIT = 4          # 取得の間に空ける秒数(レート制限対策)
 RETRY_CHUNK = 40        # 取得できなかった銘柄を再試行するときの小分けの大きさ
 RETRY_WAIT = 30         # 再試行の前に空ける秒数
-COLUMNS = ["date", "code", "close", "adj_close", "volume", "turnover"]
+COLUMNS = ["date", "code", "close", "adj_close", "volume", "turnover", "open", "high", "low"]
+OHLC = ["open", "high", "low"]
+OHLC_WINDOW_DAYS = 200    # 始値・高値・安値の有無を見る範囲(ローソク足で使う期間より少し長め)
+OHLC_MISSING_RATIO = 0.5  # この範囲で始値が欠けている行が半分を超える銘柄は、全期間を取り直す(初回の埋め戻し)
 
 
 def drop_unfinished_day(df: pd.DataFrame, now=None) -> pd.DataFrame:
@@ -104,11 +109,14 @@ def _download_once(codes: list[str], start: pd.Timestamp) -> pd.DataFrame:
         sub = raw[t]
         if "Adj Close" not in sub.columns:
             sub = sub.assign(**{"Adj Close": sub["Close"]})
-        df = sub[["Close", "Adj Close", "Volume"]].dropna(subset=["Close", "Volume"])
+        for c in ("Open", "High", "Low"):
+            if c not in sub.columns:
+                sub = sub.assign(**{c: np.nan})
+        df = sub[["Close", "Adj Close", "Volume", "Open", "High", "Low"]].dropna(subset=["Close", "Volume"])
         if df.empty:
             continue
         df = df.reset_index()
-        df.columns = ["date", "close", "adj_close", "volume"]
+        df.columns = ["date", "close", "adj_close", "volume", "open", "high", "low"]
         df["code"] = t[:-2]
         frames.append(df)
     if not frames:
@@ -117,6 +125,9 @@ def _download_once(codes: list[str], start: pd.Timestamp) -> pd.DataFrame:
     out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None).dt.normalize()
     out["adj_close"] = out["adj_close"].fillna(out["close"])
     out["turnover"] = out["close"] * out["volume"]
+    # 始値・高値・安値が0や終値と矛盾する(高値<安値など)行は欠損扱いにする
+    bad = (out[OHLC] <= 0).any(axis=1) | (out["high"] < out["low"])
+    out.loc[bad, OHLC] = np.nan
     return out[COLUMNS]
 
 
@@ -211,10 +222,27 @@ def apply_scale(df: pd.DataFrame, scale: dict) -> pd.DataFrame:
         m = df["code"] == code
         df.loc[m, "adj_close"] = df.loc[m, "adj_close"] * fa
         if fc != 1.0:
+            for c in OHLC:                       # 始値・高値・安値も終値と同じ分割調整
+                df.loc[m, c] = df.loc[m, c] * fc
             df.loc[m, "close"] = df.loc[m, "close"] * fc
             df.loc[m, "volume"] = df.loc[m, "volume"] / fc
             df.loc[m, "turnover"] = df.loc[m, "close"] * df.loc[m, "volume"]
     return df
+
+
+def ohlc_backfill_codes(old: pd.DataFrame, codes: list[str], exclude: set[str] = frozenset(),
+                        window_days: int = OHLC_WINDOW_DAYS, ratio: float = OHLC_MISSING_RATIO) -> list[str]:
+    """直近 window_days 日の行のうち始値が欠けている割合が ratio を超える銘柄を返す。
+
+    始値・高値・安値の列を追加した直後は、保存済みの行すべてで欠けているので、全期間を取り直して埋める。
+    一部の日だけ欠けている銘柄(取引所データの欠損)は、取り直しても埋まらないので対象にしない。
+    """
+    if old.empty or "open" not in old.columns:
+        return []
+    recent = old[old["date"] >= old["date"].max() - pd.Timedelta(days=window_days)]
+    recent = recent[recent["code"].isin(codes) & ~recent["code"].isin(exclude)]
+    miss = recent["open"].isna().groupby(recent["code"]).mean()
+    return sorted(miss[miss > ratio].index)
 
 
 def make_demo(codes_sectors: pd.DataFrame, days: int = 300) -> pd.DataFrame:
@@ -236,9 +264,13 @@ def make_demo(codes_sectors: pd.DataFrame, days: int = 300) -> pd.DataFrame:
         trend = np.exp(np.linspace(0, sector_vol_trend.get(s, 0.0) * days, days))
         spike = np.exp(rng.normal(0, 0.25, days))
         volume = base_vol * trend * spike
+        prev = np.concatenate([[close[0]], close[:-1]])
+        o = prev * np.exp(rng.normal(0, 0.004, days))
+        hi = np.maximum(o, close) * np.exp(np.abs(rng.normal(0, 0.004, days)))
+        lo = np.minimum(o, close) * np.exp(-np.abs(rng.normal(0, 0.004, days)))
         rows.append(pd.DataFrame({
             "date": dates, "code": r["code"], "close": close, "adj_close": close,
-            "volume": volume, "turnover": close * volume,
+            "volume": volume, "turnover": close * volume, "open": o, "high": hi, "low": lo,
         }))
     return pd.concat(rows, ignore_index=True)[COLUMNS]
 
@@ -265,6 +297,9 @@ def main() -> int:
         old = pd.DataFrame(columns=COLUMNS)
     if args.full:
         old = pd.DataFrame(columns=COLUMNS)
+    for c in OHLC:      # 始値・高値・安値の列が追加される前に保存したデータには、列を足しておく(値は欠損)
+        if c not in old.columns:
+            old[c] = np.nan
 
     full_start = pd.Timestamp.today().normalize() - pd.Timedelta(days=INITIAL_DAYS)
     have = set(old["code"])
@@ -287,9 +322,12 @@ def main() -> int:
     else:
         new, refetch = pd.DataFrame(columns=COLUMNS), []
 
-    refetch = sorted(set(refetch)) + unknown
+    backfill = ohlc_backfill_codes(old, known, exclude=set(refetch)) if known else []
+    if backfill:
+        print(f"始値・高値・安値がない銘柄({len(backfill)})は、全期間を取り直して埋め戻します。")
+    refetch = sorted(set(refetch) | set(backfill)) + unknown
     if refetch:
-        print(f"全期間を取得する銘柄({len(refetch)}): 書き換え{len(refetch) - len(unknown)} / 新規{len(unknown)}")
+        print(f"全期間を取得する銘柄({len(refetch)}): 書き換え・埋め戻し{len(refetch) - len(unknown)} / 新規{len(unknown)}")
         full = download(refetch, full_start)
         got = set(full["code"].unique())
         if got:

@@ -5,8 +5,10 @@ BigQuery にはつながない。bq_sync.py の反映と同じ時点の prices.p
 
     rows    ... 業種ごとの最新指標(sector_summary の最新日)
     series  ... 業種ごとの直近120営業日の推移(sector_timeseries)
-    stocks  ... 業種ごとの構成銘柄(直近20日の売買代金が大きい順に上位 STOCK_LIMIT 銘柄、直近61営業日)
-              点は [日付の番号, 調整後終値, 売買代金]。日付の番号は dates の添字
+    stocks  ... 業種ごとの構成銘柄(直近20日の売買代金が大きい順に上位 STOCK_LIMIT 銘柄、直近 STOCK_DAYS 営業日)
+              点は [日付の番号, 始値, 高値, 安値, 終値, 売買代金(百万円)]。日付の番号は dates の添字。
+              始値・高値・安値・終値はすべて配当調整後の水準(終値 = adj_close、始値・高値・安値は
+              分割調整のみの値に adj_close / close を掛けたもの)。始値などがない行は null
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ from metrics import compute  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "snapshot.json"
 STOCK_LIMIT = 30
-STOCK_DAYS = 61
+STOCK_DAYS = 180   # ローソク足の拡大縮小で遡れる営業日数(初期表示は直近60営業日)
 
 
 def _num(v, nd=None):
@@ -33,6 +35,14 @@ def _num(v, nd=None):
         return None
     f = float(v)
     return round(f, nd) if nd is not None else f
+
+
+def _px(v):
+    """価格は 1000 以上なら小数1桁、未満なら2桁に丸める(ファイルを小さくするため)。"""
+    if v is None or pd.isna(v):
+        return None
+    v = float(v)
+    return round(v, 1 if abs(v) >= 1000 else 2)
 
 
 def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now: datetime) -> dict:
@@ -70,8 +80,14 @@ def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now
     if "adj_close" not in p.columns:
         p["adj_close"] = p["close"]
     stk = uni[uni["type"] == "stock"]
+    for c in ("open", "high", "low"):
+        if c not in p.columns:
+            p[c] = np.nan
+    f = (p["adj_close"] / p["close"]).where(p["close"] > 0)      # 配当調整の倍率
+    for c in ("open", "high", "low"):
+        p[c] = p[c] * f
     p = p[p["code"].isin(stk["code"])]
-    cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=130)
+    cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=STOCK_DAYS * 7 // 5 + 30)
     p = p[p["date"] >= cutoff].sort_values(["code", "date"])
     p["rn"] = p.groupby("code").cumcount(ascending=False) + 1      # 1 = 最新日
     dates = sorted(p[p["rn"] <= STOCK_DAYS]["date"].unique())
@@ -86,7 +102,8 @@ def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now
         lst = []
         for c in codes[:STOCK_LIMIT]:
             d = by_code[c]
-            pts = [[didx[pd.Timestamp(dt)], _num(a, 3), _num(t, 0)] for dt, a, t in zip(d["date"], d["adj_close"], d["turnover"])]
+            pts = [[didx[pd.Timestamp(dt)], _px(o), _px(h), _px(lo), _px(a), None if pd.isna(t) else int(round(t / 1e6))]
+                   for dt, o, h, lo, a, t in zip(d["date"], d["open"], d["high"], d["low"], d["adj_close"], d["turnover"])]
             lst.append({"code": c, "name": names.get(c, c), "pts": pts})
         stocks[sector] = {"total": len(g), "list": lst}
 

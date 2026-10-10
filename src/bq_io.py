@@ -24,6 +24,8 @@ PRICES_SCHEMA = [
     ("close", "FLOAT64"), ("adj_close", "FLOAT64"),
     ("volume", "FLOAT64"), ("turnover", "FLOAT64"),
     ("loaded_at", "TIMESTAMP"),
+    # 以下はローソク足のために追加(既存テーブルには ensure_tables が末尾に足す。過去の行は fetch.py が埋め戻す)
+    ("open", "FLOAT64"), ("high", "FLOAT64"), ("low", "FLOAT64"),
 ]
 
 UNIVERSE_SCHEMA = [
@@ -126,13 +128,13 @@ def read_prices(client, since, codes: list[str] | None = None) -> pd.DataFrame:
     params = [bigquery.ScalarQueryParameter("since", "DATE", since)]
     if codes:
         params.append(bigquery.ArrayQueryParameter("codes", "STRING", list(codes)))
-    job = _run(client, f"SELECT date, code, close, adj_close, volume, turnover FROM {fqn('prices')} "
+    job = _run(client, f"SELECT date, code, close, adj_close, volume, turnover, open, high, low FROM {fqn('prices')} "
                        f"WHERE {where}", params)
     df = job.to_dataframe(create_bqstorage_client=False)
     if df.empty:
-        return pd.DataFrame(columns=["date", "code", "close", "adj_close", "volume", "turnover"])
+        return pd.DataFrame(columns=["date", "code", "close", "adj_close", "volume", "turnover", "open", "high", "low"])
     df["date"] = pd.to_datetime(df["date"])
-    for c in ["close", "adj_close", "volume", "turnover"]:
+    for c in ["close", "adj_close", "volume", "turnover", "open", "high", "low"]:
         df[c] = df[c].astype("float64")
     df["code"] = df["code"].astype(str)
     return df.sort_values(["code", "date"]).reset_index(drop=True)
