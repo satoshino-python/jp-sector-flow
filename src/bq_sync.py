@@ -55,7 +55,10 @@ def build_prices(prices: pd.DataFrame, now: datetime) -> pd.DataFrame:
         df["adj_close"] = df["close"]
     df["date"] = _to_date(df["date"])
     df["code"] = df["code"].astype(str)
-    for c in ["close", "adj_close", "volume", "turnover"]:
+    for c in ["open", "high", "low"]:
+        if c not in df.columns:
+            df[c] = np.nan
+    for c in ["close", "adj_close", "volume", "turnover", "open", "high", "low"]:
         df[c] = df[c].astype("float64")
     df["loaded_at"] = now
     return df[_names(bq_io.PRICES_SCHEMA)]
@@ -186,7 +189,7 @@ def main() -> int:
     client = bq_io.get_client()
     bq_io.ensure_tables(client)
     bq_io.merge_table(client, frames["prices"], "prices", keys=["date", "code"],
-                      compare=["close", "adj_close", "volume", "turnover"], verify=True)
+                      compare=["close", "adj_close", "volume", "turnover", "open", "high", "low"], verify=True)
     bq_io.replace_table(client, frames["universe"], "universe")
     bq_io.merge_table(client, frames["sector_summary"], "sector_summary",
                       keys=["as_of", "sector"])
