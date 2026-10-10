@@ -134,6 +134,13 @@ details.table-view summary{cursor:pointer;color:var(--fg2)}
 .sector-meta{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--fg2)}
 .sector-meta b{color:var(--fg);font-weight:700}
 
+/* 銘柄チャート(構成銘柄の行をクリック) */
+.stock-chart{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:14px;background:var(--bg)}
+.sc-head{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;justify-content:space-between}
+.sc-title{font-size:14px}
+.sc-key{display:inline-flex;gap:12px;font-size:11px;color:var(--fg2);flex-wrap:wrap}
+.sc-key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+
 /* 状態表示 */
 .state{padding:22px 4px;color:var(--fg2);font-size:13px;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
 .state strong{color:var(--fg)}
@@ -242,7 +249,7 @@ const LABELS = {
 };
 const LABEL_ORDER = ["資金流入", "買い細り", "売り圧力/転換前", "低調"];
 
-const state = {rows: [], series: {}, selected: null, measure: "c", picked: new Map(), stocks: {},
+const state = {stockCode: null, stockC: null, rows: [], series: {}, selected: null, measure: "c", picked: new Map(), stocks: {},
                loadedAt: null, fetchedAt: null, busy: false};
 
 /* ---------- 小道具 ---------- */
@@ -326,7 +333,7 @@ function loadStocks(sector) {
 /* ---------- 選択 ---------- */
 function select(sector) {
   if (state.selected === sector) return;
-  state.selected = sector;
+  state.selected = sector; state.stockCode = null;
   if (!state.picked.has(sector)) pick(sector, true);
   renderHeat(); renderScatter(); renderLines(); renderCmp(); renderList();
   loadStocks(sector);
@@ -554,6 +561,69 @@ function spark(vals) {
     s("path", {d, fill: "none", stroke: "var(--s1)", "stroke-width": 1.75, "stroke-linejoin": "round", "stroke-linecap": "round"}),
     s("circle", {cx: X(vals.length - 1), cy: Y(vals[vals.length - 1]), r: 2.5, fill: "var(--s1)"}));
 }
+/* ---------- 銘柄チャート ---------- */
+function pickStock(code) {
+  state.stockCode = state.stockCode === code ? null : code;
+  renderDrill();
+  const el = $("#stock-chart"); if (el) el.scrollIntoView({block: "nearest"});
+}
+function stockPanel(c) {
+  return h("div", {class: "stock-chart", id: "stock-chart"},
+    h("div", {class: "sc-head"},
+      h("div", {class: "sc-title"}, h("b", null, c.name), h("span", {class: "muted"}, " " + c.code)),
+      h("div", {class: "sector-meta"}, h("span", null, "5日 ", h("b", null, sg(c.r5) + "%")), h("span", null, "20日 ", h("b", null, sg(c.r20) + "%")), h("span", null, "60日 ", h("b", null, sg(c.r60) + "%"))),
+      h("button", {class: "btn", type: "button", onclick: () => pickStock(c.code)}, "閉じる")),
+    h("div", {class: "sc-key"}, h("span", null, h("i", {style: "background:var(--s1)"}), "調整後終値(上)"),
+      h("span", null, h("i", {style: "background:var(--pos)"}), "売買代金・前日比プラス(下)"), h("span", null, h("i", {style: "background:var(--neg)"}), "前日比マイナス")),
+    h("div", {class: "chart", id: "sc-wrap"}),
+    h("p", {class: "note"}, "調整後終値は株式分割・配当を反映した値で、取引所の表示価格とは異なります。直近約60営業日。"));
+}
+function drawStock() {
+  const c = state.stockC, wrap = $("#sc-wrap"); if (!c || !wrap) return;
+  wrap.replaceChildren();
+  const pts = c.pts, n = pts.length;
+  if (n < 2) { wrap.append(h("div", {class: "state"}, "チャートを描くためのデータが足りません。")); return; }
+  const W = Math.max(280, wrap.clientWidth || 600), mg = {l: 54, r: 14, t: 10, b: 24}, H1 = W < 520 ? 190 : 230, H2 = 64, gap = 10;
+  const pTop = mg.t, pBot = pTop + H1, vTop = pBot + gap, vBot = vTop + H2, H = vBot + mg.b;
+  const av = pts.map(p => p.a).filter(v => v != null);
+  if (!av.length) { wrap.append(h("div", {class: "state"}, "価格データがありません。")); return; }
+  let lo = Math.min(...av), hi = Math.max(...av); const pad = (hi - lo) * 0.06 || Math.abs(hi) * 0.02 || 1; lo -= pad; hi += pad;
+  const ticks = niceTicks(lo, hi, 4); lo = Math.min(lo, ticks[0]); hi = Math.max(hi, ticks[ticks.length - 1]);
+  const fp = v => Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("ja-JP") : fx(v, 1);
+  const X = i => mg.l + i / (n - 1) * (W - mg.l - mg.r), Y = v => pBot - (v - lo) / (hi - lo) * (pBot - pTop);
+  const tmax = Math.max(...pts.map(p => p.t || 0), 1), Yv = t => vBot - t / tmax * H2;
+  const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": c.name + "の調整後終値と売買代金の推移"});
+  ticks.forEach(v => svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: Y(v), y2: Y(v), stroke: "var(--grid)"}), s("text", {class: "axis-label", x: mg.l - 6, y: Y(v) + 4, "text-anchor": "end"}, fp(v))));
+  const bw = Math.max(1, (W - mg.l - mg.r) / n * 0.7);
+  pts.forEach((p, i) => {
+    if (!p.t) return;
+    const prev = i > 0 ? pts[i - 1].a : null, up = p.a != null && prev != null && p.a >= prev;
+    svg.append(s("rect", {x: X(i) - bw / 2, y: Yv(p.t), width: bw, height: Math.max(0, vBot - Yv(p.t)), fill: up ? "var(--pos)" : "var(--neg)", rx: 1}));
+  });
+  svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: vBot, y2: vBot, stroke: "var(--axis)"}),
+    s("text", {class: "axis-label", x: mg.l - 6, y: vTop + 9, "text-anchor": "end"}, fx(tmax / 1e8, 0) + "億"),
+    s("text", {class: "axis-label", x: mg.l - 6, y: vBot, "text-anchor": "end"}, "0"));
+  const nx = W < 520 ? 4 : 6;
+  for (let k = 0; k < nx; k++) { const i = Math.round(k * (n - 1) / (nx - 1)); svg.append(s("text", {class: "axis-label", x: X(i), y: H - 6, "text-anchor": k === 0 ? "start" : k === nx - 1 ? "end" : "middle"}, pts[i].d.slice(5).replace("-", "/"))); }
+  let d = "", on = false;
+  pts.forEach((p, i) => { if (p.a == null) { on = false; return; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Y(p.a).toFixed(1); on = true; });
+  svg.append(s("path", {d, fill: "none", stroke: "var(--s1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"}));
+  const li = pts.length - 1 - [...pts].reverse().findIndex(p => p.a != null);
+  svg.append(s("circle", {cx: X(li), cy: Y(pts[li].a), r: 4, fill: "var(--s1)", stroke: "var(--surface)", "stroke-width": 2}));
+  const cross = s("line", {y1: pTop, y2: vBot, stroke: "var(--fg2)", "stroke-width": 1, visibility: "hidden"});
+  const ov = s("rect", {x: mg.l, y: pTop, width: W - mg.l - mg.r, height: vBot - pTop, fill: "transparent", style: "cursor:crosshair"});
+  const at = e => {
+    const r = ov.getBoundingClientRect(), f = (e.clientX - r.left) / r.width, i = Math.max(0, Math.min(n - 1, Math.round(f * (n - 1)))), p = pts[i], pv = i > 0 ? pts[i - 1] : null;
+    cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("visibility", "visible");
+    const rows = [{label: "調整後終値", color: "var(--s1)", value: p.a == null ? "-" : fp(p.a)}];
+    if (p.a != null && pv && pv.a) rows.push({label: "前日比", value: sg((p.a / pv.a - 1) * 100, 2) + "%"});
+    rows.push({label: "売買代金", value: p.t == null ? "-" : fx(p.t / 1e8, 1) + "億円"});
+    showTip(e, p.d, rows);
+  };
+  ov.addEventListener("pointermove", at); ov.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+  svg.append(cross, ov); wrap.append(svg);
+}
+
 function renderDrill(loading) {
   const sec = state.selected, r = state.rows.find(x => x.sector === sec), box = $("#drill");
   $("#drill-title").textContent = sec ? "構成銘柄: " + sec : "構成銘柄";
@@ -568,19 +638,22 @@ function renderDrill(loading) {
     const a = x.pts.slice().sort((p, q) => p.d < q.d ? 1 : -1);          // 新しい順
     const ret = n => a.length > n && a[n].a ? (a[0].a / a[n].a - 1) * 100 : null;
     const prev = a.slice(1, 21).map(p => p.t).filter(v => v != null), avg = prev.length ? prev.reduce((u, v) => u + v, 0) / prev.length : null;
-    return {code: x.code, name: x.name, last: a[0] ? a[0].d : null, r5: ret(5), r20: ret(20), r60: ret(60), turn: a[0] ? a[0].t : null, ratio: avg ? a[0].t / avg : null, line: a.slice().reverse().map(p => p.a)};
+    return {code: x.code, name: x.name, last: a[0] ? a[0].d : null, r5: ret(5), r20: ret(20), r60: ret(60), turn: a[0] ? a[0].t : null, ratio: avg ? a[0].t / avg : null, line: a.slice().reverse().map(p => p.a), pts: a.slice().reverse()};
   }).sort((p, q) => (q.r20 ?? -1e9) - (p.r20 ?? -1e9));
   const mx = Math.max(...calc.map(c => Math.abs(c.r20 || 0)), 1);
   const t = h("table", {class: "list"},
     h("thead", null, h("tr", null, ["銘柄", "60日の推移", "5日", "20日", "20日の強弱", "60日", "売買代金\n(億円)", "当日/20日"].map((x, i) => h("th", {scope: "col", class: i === 0 ? "sticky" : ""}, x.split("\n").flatMap((y, j) => j ? [h("br"), y] : [y]))))),
-    h("tbody", null, calc.map(c => h("tr", {style: "cursor:default"},
+    h("tbody", null, calc.map(c => h("tr", {style: "cursor:pointer", class: c.code === state.stockCode ? "sel" : null, tabindex: "0", role: "button", "aria-pressed": c.code === state.stockCode ? "true" : "false", "aria-label": c.name + "のチャートを表示",
+      onclick: () => pickStock(c.code), onkeydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickStock(c.code); } }},
       h("td", {class: "sticky wrapname"}, c.name, h("span", {class: "muted"}, " " + c.code)),
       h("td", {style: "text-align:left"}, c.line.length > 1 ? spark(c.line) : "-"),
       h("td", null, sg(c.r5)), h("td", null, sg(c.r20)),
       h("td", null, h("div", {class: "minibar"}, h("div", {class: "cmp-zero", style: "left:50%"}), c.r20 == null ? null : h("div", {class: "bar " + (c.r20 >= 0 ? "p" : "n"), style: c.r20 >= 0 ? `left:50%;width:${Math.abs(c.r20) / mx * 50}%` : `right:50%;width:${Math.abs(c.r20) / mx * 50}%`}))),
       h("td", null, sg(c.r60)), h("td", null, c.turn == null ? "-" : fx(c.turn / 1e8, 1)), h("td", null, c.ratio == null ? "-" : fx(c.ratio, 2) + "x")))));
-  box.append(t, h("p", {class: "note", style: "margin-top:8px"}, (d.total > d.length ? "構成銘柄" + d.total + "銘柄のうち、直近20日の売買代金が大きい" + d.length + "銘柄を表示しています。" : "") +
-    "騰落率は調整後終値ベース(%)。最新日: " + (calc[0] && calc[0].last || "-") + "。20日の強弱の棒は、表示中の銘柄の中での相対的な大きさです。"));
+  state.stockC = calc.find(c => c.code === state.stockCode) || null; if (!state.stockC) state.stockCode = null;
+  box.append(...(state.stockC ? [stockPanel(state.stockC)] : []), t, h("p", {class: "note", style: "margin-top:8px"}, (d.total > d.length ? "構成銘柄" + d.total + "銘柄のうち、直近20日の売買代金が大きい" + d.length + "銘柄を表示しています。" : "") +
+    "騰落率は調整後終値ベース(%)。最新日: " + (calc[0] && calc[0].last || "-") + "。20日の強弱の棒は、表示中の銘柄の中での相対的な大きさです。行をクリックすると、その銘柄のチャートを表示します。"));
+  drawStock();
 }
 
 /* ---------- Claudeの見立て(スナップショットに同梱) ---------- */
@@ -607,7 +680,7 @@ $("#measure").addEventListener("click", e => {
   renderLines();
 });
 let rt = 0;
-new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if (state.rows.length) { renderScatter(); renderLines(); } }, 120); }).observe(document.body);
+new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if (state.rows.length) { renderScatter(); renderLines(); drawStock(); } }, 120); }).observe(document.body);
 
 (function init() {
   renderComment(SNAP.comments);
