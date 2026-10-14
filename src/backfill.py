@@ -41,6 +41,34 @@ def drop_broken(df: pd.DataFrame) -> pd.DataFrame:
     return df[~bad]
 
 
+# Yahoo が分割を過去に反映していない銘柄: {コード: (分割後の最初の補正済み日付, 分割比)}
+# 8227 しまむら: 1:3 分割(2026-02-19権利落ち)。2/18の行だけ ÷3 済みで、2/17以前が未調整
+MISSING_SPLITS = {"8227": (pd.Timestamp("2026-02-18"), 3)}
+
+
+def apply_missing_splits(df: pd.DataFrame) -> pd.DataFrame:
+    """MISSING_SPLITS の銘柄について、分割前の行を分割比で調整する(価格 ÷ 比、出来高 × 比)。
+
+    すでに Yahoo が直っている場合に二重で調整しないよう、境目の終値の比が分割比に近いときだけ行う。
+    """
+    df = df.copy()
+    for code, (since, ratio) in MISSING_SPLITS.items():
+        sub = df[df["code"] == code].sort_values("date")
+        before, after = sub[sub["date"] < since], sub[sub["date"] >= since]
+        if before.empty or after.empty:
+            continue
+        jump = before["close"].iloc[-1] / after["close"].iloc[0]
+        if not (ratio * 0.7 < jump < ratio * 1.3):
+            print(f"{code}: 境目の比 {jump:.2f} が分割比 {ratio} と合わないため調整しません(Yahoo側が直った可能性)")
+            continue
+        m = (df["code"] == code) & (df["date"] < since)
+        for c in ["close", "adj_close", "open", "high", "low"]:
+            df.loc[m, c] = df.loc[m, c] / ratio
+        df.loc[m, "volume"] = df.loc[m, "volume"] * ratio
+        print(f"{code}: {since.date()}より前の{int(m.sum())}行を1:{ratio}分割で調整")
+    return df
+
+
 def suspicious(df: pd.DataFrame) -> pd.DataFrame:
     d = df.sort_values(["code", "date"])
     chg = d.groupby("code")["adj_close"].pct_change().abs()
@@ -68,6 +96,7 @@ def main() -> int:
     df = drop_broken(df)
     if n0 != len(df):
         print(f"壊れた値の行を除外: {n0 - len(df)}行")
+    df = apply_missing_splits(df)
 
     got = df["code"].nunique()
     print(f"取得: {len(df)}行 / {got}/{len(codes)}銘柄 / {df['date'].min().date()}〜{df['date'].max().date()}")
