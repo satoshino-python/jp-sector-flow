@@ -24,6 +24,21 @@ import fetch
 DEFAULT_START = "2021-01-01"
 MAX_DAILY_MOVE = 0.45     # 日次の変化がこれを超える行は、誤データの疑いとして件数を表示する
 MIN_COVERAGE = 0.95       # 取得できた銘柄がこの割合を下回ったら反映しない
+MAX_PRICE = 1e7           # 国内株でありえない水準(これ以上は壊れた値として捨てる)
+ADJ_RATIO_RANGE = (0.1, 10)  # adj_close / close がこの範囲外の行は壊れた値として捨てる
+
+
+def drop_broken(df: pd.DataFrame) -> pd.DataFrame:
+    """Yahoo の壊れた値(負・桁違い・調整係数の暴走)の行を捨てる。
+
+    例: 8303 は adj_close が 2e13 や -2e8、close が 5.5e10 の行がある。
+    日次側は日次±45%超を指数計算から除外するが、BigQuery に壊れた行を残さないよう反映前に除く。
+    """
+    ratio = df["adj_close"] / df["close"]
+    bad = ((df[["close", "adj_close"]] <= 0).any(axis=1)
+           | (df[["close", "adj_close"]] > MAX_PRICE).any(axis=1)
+           | (ratio < ADJ_RATIO_RANGE[0]) | (ratio > ADJ_RATIO_RANGE[1]))
+    return df[~bad]
 
 
 def suspicious(df: pd.DataFrame) -> pd.DataFrame:
@@ -49,6 +64,10 @@ def main() -> int:
         return 1
     df = fetch.drop_unfinished_day(df)
     df = df[df["code"].isin(codes)].drop_duplicates(["date", "code"], keep="last")
+    n0 = len(df)
+    df = drop_broken(df)
+    if n0 != len(df):
+        print(f"壊れた値の行を除外: {n0 - len(df)}行")
 
     got = df["code"].nunique()
     print(f"取得: {len(df)}行 / {got}/{len(codes)}銘柄 / {df['date'].min().date()}〜{df['date'].max().date()}")
