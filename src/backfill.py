@@ -69,6 +69,33 @@ def apply_missing_splits(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Yahoo の不具合で価格が桁違いになっている行(反映前に除き、BigQuery 側の既存行も削除する)
+# 1306 / 1629: 2026-03-30〜31 だけ終値が約1/10・1/500(4/1に元に戻る。分割・併合の事実なし)
+BAD_ROWS = {"1306": ["2026-03-30", "2026-03-31"], "1629": ["2026-03-30", "2026-03-31"]}
+
+
+def drop_bad_rows(df: pd.DataFrame) -> pd.DataFrame:
+    bad = pd.Series(False, index=df.index)
+    for code, dates in BAD_ROWS.items():
+        bad |= (df["code"] == code) & df["date"].isin(pd.to_datetime(dates))
+    if bad.any():
+        print(f"既知の不具合行を除外: {int(bad.sum())}行")
+    return df[~bad]
+
+
+def delete_bad_rows(client) -> None:
+    from google.cloud import bigquery
+
+    n = 0
+    for code, dates in BAD_ROWS.items():
+        params = [bigquery.ScalarQueryParameter("code", "STRING", code),
+                  bigquery.ArrayQueryParameter("dates", "DATE", [pd.Timestamp(d).date() for d in dates])]
+        job = bq_io._run(client, f"DELETE FROM {bq_io.fqn('prices')} WHERE code = @code AND date IN UNNEST(@dates)",
+                         params)
+        n += job.num_dml_affected_rows or 0
+    print(f"BigQuery から既知の不具合行を削除: {n}行")
+
+
 def suspicious(df: pd.DataFrame) -> pd.DataFrame:
     d = df.sort_values(["code", "date"])
     chg = d.groupby("code")["adj_close"].pct_change().abs()
@@ -96,6 +123,7 @@ def main() -> int:
     df = drop_broken(df)
     if n0 != len(df):
         print(f"壊れた値の行を除外: {n0 - len(df)}行")
+    df = drop_bad_rows(df)
     df = apply_missing_splits(df)
 
     got = df["code"].nunique()
@@ -127,6 +155,7 @@ def main() -> int:
     bq_io.ensure_tables(client)
     bq_io.merge_table(client, frame, "prices", keys=["date", "code"],
                       compare=["close", "adj_close", "volume", "turnover", "open", "high", "low"], verify=True)
+    delete_bad_rows(client)
     print(f"BigQuery反映完了: {len(frame)}行")
     return 0
 
