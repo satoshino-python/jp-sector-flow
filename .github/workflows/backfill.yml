@@ -35,4 +35,14 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - name: Backfill prices
-        run: python src/backfill.py --start "${{ inputs.start }}" ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          START: ${{ inputs.start }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          echo "start=$START dry_run=$DRY_RUN"
+          if [ "$DRY_RUN" = "true" ]; then
+            python src/backfill.py --start "$START" --dry-run
+          else
+            echo "本実行: BigQuery に反映します"
+            python src/backfill.py --start "$START"
+          fi
