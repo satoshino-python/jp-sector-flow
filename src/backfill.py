@@ -69,30 +69,40 @@ def apply_missing_splits(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Yahoo の不具合で価格が桁違いになっている行(反映前に除き、BigQuery 側の既存行も削除する)
+# Yahoo の不具合で壊れている行(反映前に除き、BigQuery 側の既存行も削除する)。コードごとの (開始日, 終了日) の一覧
 # 1306 / 1629: 2026-03-30〜31 だけ終値が約1/10・1/500(4/1に元に戻る。分割・併合の事実なし)
-BAD_ROWS = {"1306": ["2026-03-30", "2026-03-31"], "1629": ["2026-03-30", "2026-03-31"]}
+# 8303: 2025-11-17〜12-17 は終値が 5.5e10 で動かず出来高0(再上場前のプレースホルダー)
+BAD_RANGES = {
+    "1306": [("2026-03-30", "2026-03-31")],
+    "1629": [("2026-03-30", "2026-03-31")],
+    "8303": [("2025-11-17", "2025-12-17")],
+}
 
 
 def drop_bad_rows(df: pd.DataFrame) -> pd.DataFrame:
     bad = pd.Series(False, index=df.index)
-    for code, dates in BAD_ROWS.items():
-        bad |= (df["code"] == code) & df["date"].isin(pd.to_datetime(dates))
+    for code, ranges in BAD_RANGES.items():
+        for lo, hi in ranges:
+            bad |= (df["code"] == code) & (df["date"] >= pd.Timestamp(lo)) & (df["date"] <= pd.Timestamp(hi))
     if bad.any():
         print(f"既知の不具合行を除外: {int(bad.sum())}行")
     return df[~bad]
 
 
 def delete_bad_rows(client) -> None:
+    """BAD_RANGES の (コード, 期間) に当たる行だけを BigQuery から削除する(範囲を固定した削除)。"""
     from google.cloud import bigquery
 
     n = 0
-    for code, dates in BAD_ROWS.items():
-        params = [bigquery.ScalarQueryParameter("code", "STRING", code),
-                  bigquery.ArrayQueryParameter("dates", "DATE", [pd.Timestamp(d).date() for d in dates])]
-        job = bq_io._run(client, f"DELETE FROM {bq_io.fqn('prices')} WHERE code = @code AND date IN UNNEST(@dates)",
-                         params)
-        n += job.num_dml_affected_rows or 0
+    for code, ranges in BAD_RANGES.items():
+        for lo, hi in ranges:
+            params = [bigquery.ScalarQueryParameter("code", "STRING", code),
+                      bigquery.ScalarQueryParameter("lo", "DATE", pd.Timestamp(lo).date()),
+                      bigquery.ScalarQueryParameter("hi", "DATE", pd.Timestamp(hi).date())]
+            job = bq_io._run(client, f"DELETE FROM {bq_io.fqn('prices')} "
+                                     f"WHERE code = @code AND date BETWEEN @lo AND @hi", params)
+            job.reload()
+            n += job.num_dml_affected_rows or 0
     print(f"BigQuery から既知の不具合行を削除: {n}行")
 
 
