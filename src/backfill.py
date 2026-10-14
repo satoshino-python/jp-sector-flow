@@ -9,7 +9,7 @@
 
 使い方:
     python src/backfill.py --dry-run                 # 取得だけして内容を表示(BigQueryには触らない)
-    python src/backfill.py --start 2021-01-01        # 取得して BigQuery に反映
+    python src/backfill.py --start 2020-01-01        # 取得して BigQuery に反映
 """
 import argparse
 import sys
@@ -21,7 +21,7 @@ import bq_io
 import bq_sync
 import fetch
 
-DEFAULT_START = "2021-01-01"
+DEFAULT_START = "2020-01-01"
 MAX_DAILY_MOVE = 0.45     # 日次の変化がこれを超える行は、誤データの疑いとして件数を表示する
 MIN_COVERAGE = 0.95       # 取得できた銘柄がこの割合を下回ったら反映しない
 MAX_PRICE = 1e7           # 国内株でありえない水準(これ以上は壊れた値として捨てる)
@@ -104,7 +104,7 @@ def suspicious(df: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--start", default=DEFAULT_START, help="遡る開始日(既定 2021-01-01)")
+    ap.add_argument("--start", default=DEFAULT_START, help="遡る開始日(既定 2020-01-01)")
     ap.add_argument("--dry-run", action="store_true", help="取得と検査だけ行い、BigQueryには反映しない")
     args = ap.parse_args()
 

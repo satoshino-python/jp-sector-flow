@@ -7,7 +7,7 @@ on:
     inputs:
       start:
         description: "遡る開始日"
-        default: "2021-01-01"
+        default: "2020-01-01"
       dry_run:
         description: "true なら取得と検査だけ行い、BigQuery には反映しない"
         type: boolean
