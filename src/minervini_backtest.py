@@ -247,7 +247,8 @@ def main() -> int:
     uni = pd.read_csv(mv.UNIVERSE, dtype={"code": str})
     prices = load_prices(start, uni)
     stocks_u = uni[uni["type"] == "stock"].set_index("code")
-    codes = [c for c in stocks_u.index if c in set(prices["code"])]
+    have = set(prices["code"].unique())   # 銘柄ごとに set を作り直すと、80万行で約3分かかる
+    codes = [c for c in stocks_u.index if c in have]
     p = mv.load_panels(prices, codes)
     panel = mv.trend_template_panel(p)
     log("指標の計算")

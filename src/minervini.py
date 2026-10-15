@@ -367,7 +367,8 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame,
            equity: float | None = None) -> tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]:
     """(基準日, テンプレート通過銘柄の判定結果, 全銘柄のテンプレート判定) を返す。"""
     stocks = uni[uni["type"] == "stock"].set_index("code")
-    codes = [c for c in stocks.index if c in set(prices["code"])]
+    have = set(prices["code"].unique())
+    codes = [c for c in stocks.index if c in have]
     p = load_panels(prices, codes)
     as_of = p["close"].index[-1]
     tt = trend_template(p)
