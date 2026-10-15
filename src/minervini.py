@@ -167,6 +167,41 @@ def trend_template(p: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return df
 
 
+def trend_template_panel(p: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """trend_template を全営業日について計算する(バックテスト用)。値は [日付 × 銘柄] の表。
+
+    ある日の行は、その日までのデータで trend_template を計算した結果と同じになるようにしている。
+    """
+    close = p["close"]
+    ma50, ma150, ma200 = (close.rolling(n).mean() for n in (50, 150, 200))
+    hi52 = p["high"].rolling(WEEKS52, min_periods=1).max()
+    lo52 = p["low"].rolling(WEEKS52, min_periods=1).min()
+    last = close.ffill()
+    num = pd.DataFrame(0.0, index=close.index, columns=close.columns)
+    den = num.copy()
+    for n, w in RS_PERIODS:
+        r = last / close.shift(n) - 1
+        ok = r.notna()
+        num = num + (w * r).where(ok, 0.0)
+        den = den + ok * w
+    score = (num / den).where(den > 0)
+    rs = (score.rank(axis=1, pct=True) * 98 + 1).round().clip(1, 99)
+    flags = [
+        (close > ma150) & (close > ma200),
+        ma150 > ma200,
+        ma200 > ma200.shift(MA200_RISING_DAYS),
+        (ma50 > ma150) & (ma50 > ma200),
+        close > ma50,
+        close >= lo52 * (1 + MIN_ABOVE_LOW),
+        close >= hi52 * (1 - MAX_BELOW_HIGH),
+        rs >= MIN_RS,
+    ]
+    tt_pass = flags[0]
+    for f in flags[1:]:
+        tt_pass = tt_pass & f
+    return {"tt_pass": tt_pass & close.notna(), "rs": rs, "ma50": ma50}
+
+
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = ATR_DAYS) -> pd.Series:
     prev = close.shift(1)
     tr = pd.concat([high - low, (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
@@ -305,16 +340,17 @@ def entry_status(v: Vcp, close: pd.Series, volume: pd.Series) -> tuple[str, floa
     return ("ブレイク" if days == 0 else f"ブレイク{days}日目"), vr, days
 
 
-def plan_trade(v: Vcp, last: float, atr_v: float, broke_out: bool, equity: float | None) -> dict:
+def plan_trade(v: Vcp, last: float, atr_v: float, broke_out: bool, equity: float | None,
+               stop_atr_min: float = STOP_ATR_MIN) -> dict:
     entry = last if broke_out else v.pivot
     structural = v.final_low - STOP_ATR_BUFFER * atr_v
-    noise_floor = entry - STOP_ATR_MIN * atr_v
+    noise_floor = entry - stop_atr_min * atr_v
     stop = min(structural, noise_floor)
     r = entry - stop
     risk_pct = r / entry
     plan = {
         "entry": entry, "stop": stop,
-        "stop_basis": "収縮安値" if structural <= noise_floor else f"{STOP_ATR_MIN}ATR",
+        "stop_basis": "収縮安値" if structural <= noise_floor else f"{stop_atr_min}ATR",
         "risk_pct": risk_pct * 100, "risk_atr": r / atr_v,
         "target_2r": entry + 2 * r, "target_3r": entry + 3 * r,
         "breakeven_at": entry + BREAKEVEN_R * r,
@@ -331,7 +367,8 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame,
            equity: float | None = None) -> tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]:
     """(基準日, テンプレート通過銘柄の判定結果, 全銘柄のテンプレート判定) を返す。"""
     stocks = uni[uni["type"] == "stock"].set_index("code")
-    codes = [c for c in stocks.index if c in set(prices["code"])]
+    have = set(prices["code"].unique())
+    codes = [c for c in stocks.index if c in have]
     p = load_panels(prices, codes)
     as_of = p["close"].index[-1]
     tt = trend_template(p)
@@ -419,7 +456,7 @@ def save_results(df: pd.DataFrame) -> None:
     from google.cloud import bigquery
 
     client = bq_io.get_client()
-    bq_io.ensure_tables(client)
+    bq_io.ensure_tables(client, ["minervini_screen"])
     days = sorted({d.isoformat() for d in df["as_of"]})
     bq_io._run(client, f"DELETE FROM {bq_io.fqn('minervini_screen')} WHERE as_of IN UNNEST(@days)",
                [bigquery.ArrayQueryParameter("days", "DATE", days)])

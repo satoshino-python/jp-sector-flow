@@ -74,6 +74,21 @@ MINERVINI_SCHEMA = (
        ("breakeven_at", "FLOAT64"), ("loaded_at", "TIMESTAMP")]
 )
 
+BACKTEST_SCHEMA = [
+    ("period", "STRING"), ("variant", "STRING"), ("code", "STRING"), ("name", "STRING"), ("sector", "STRING"),
+    ("signal_date", "DATE"), ("result", "STRING"), ("pivot", "FLOAT64"), ("stop", "FLOAT64"), ("stop_basis", "STRING"),
+    ("atr_pct", "FLOAT64"), ("rs", "FLOAT64"), ("depths", "STRING"), ("n_contractions", "INT64"),
+    ("base_days", "INT64"), ("dryup", "FLOAT64"), ("breakout_vol", "FLOAT64"),
+    ("entry_date", "DATE"), ("entry", "FLOAT64"), ("risk_pct", "FLOAT64"), ("exit_date", "DATE"), ("exit", "FLOAT64"),
+    ("exit_reason", "STRING"), ("r_mult", "FLOAT64"), ("ret_pct", "FLOAT64"), ("hold_days", "INT64"),
+    ("mfe_r", "FLOAT64"), ("loaded_at", "TIMESTAMP"),
+    # 検証用ページのチャートに重ねるため(minervini_screen と同じ形)
+    ("final_low", "FLOAT64"), ("base_start", "DATE"), ("zigzag", "STRING"), ("dry_from", "DATE"), ("dry_to", "DATE"),
+    ("breakeven_date", "DATE"),
+    # 売買ルールを比べるため(rule: vcp_pivot / high52 / vcp_high52。pivot には52週高値のルールでは前日までの52週高値が入る)
+    ("rule", "STRING"), ("vcp_ok", "BOOL"),
+]
+
 TABLES = {
     "prices": dict(schema=PRICES_SCHEMA, partition="date", cluster=["code"],
                    desc="株価(日次)。キーは (date, code)"),
@@ -86,6 +101,9 @@ TABLES = {
     "minervini_screen": dict(schema=MINERVINI_SCHEMA, partition="as_of", cluster=["code"],
                              desc="ミネルヴィニのスクリーニング結果(src/minervini.py)。キーは (as_of, code)。"
                                   "テンプレートを6条件以上満たした銘柄。zigzag は [種類, 日付, 価格] のJSON"),
+    "minervini_backtest": dict(schema=BACKTEST_SCHEMA, partition=None, cluster=["variant"],
+                               desc="ミネルヴィニのルールのバックテスト(src/minervini_backtest.py)。シグナルごとの売買と"
+                                    "見送り。variant は売買ルール(シグナル + 損切り)。実行のたびに全置換"),
 }
 
 
@@ -127,28 +145,47 @@ def _run(client, sql: str, params=None):
     return job
 
 
-def ensure_tables(client) -> None:
+def ensure_tables(client, tables: list[str] | None = None) -> None:
     """テーブルがなければ作り、あれば足りない列を追加する。DDLはクエリ料金がかからない。
 
     列の追加は末尾に足すだけ(既存の列は消さない・型も変えない)。新しい列は過去の行では NULL。
+    tables を渡すと、そのテーブルだけを確かめる(1テーブルにつきクエリ2回かかるため)。
     """
     for table, spec in TABLES.items():
+        if tables is not None and table not in tables:
+            continue
         _run(client, _ddl(table))
         adds = ", ".join(f"ADD COLUMN IF NOT EXISTS {n} {t}" for n, t in spec["schema"])
         _run(client, f"ALTER TABLE {fqn(table)} {adds}")
 
 
+def _to_dataframe(job) -> tuple[pd.DataFrame, str]:
+    """クエリ結果を DataFrame にする。BigQuery Storage API(並列の一括転送で速い)を使い、
+    使えなければ(ライブラリがない・権限がないなど)通常の API(ページごとに取る。行数が多いと遅い)で読む。"""
+    try:
+        from google.cloud import bigquery_storage  # noqa: F401
+        return job.to_dataframe(create_bqstorage_client=True), "Storage API"
+    except Exception as e:  # noqa: BLE001
+        print(f"BigQuery Storage API が使えないため通常の API で読みます({type(e).__name__}: {str(e)[:200]})")
+        return job.to_dataframe(create_bqstorage_client=False), "通常API"
+
+
 def read_prices(client, since, codes: list[str] | None = None) -> pd.DataFrame:
     """価格テーブルから since 以降(対象銘柄だけ)を読み出す。"""
+    import time
+
     from google.cloud import bigquery
 
     where = "date >= @since" + (" AND code IN UNNEST(@codes)" if codes else "")
     params = [bigquery.ScalarQueryParameter("since", "DATE", since)]
     if codes:
         params.append(bigquery.ArrayQueryParameter("codes", "STRING", list(codes)))
+    t0 = time.time()
     job = _run(client, f"SELECT date, code, close, adj_close, volume, turnover, open, high, low FROM {fqn('prices')} "
                        f"WHERE {where}", params)
-    df = job.to_dataframe(create_bqstorage_client=False)
+    t1 = time.time()
+    df, how = _to_dataframe(job)
+    print(f"prices の読み出し: {len(df):,}行(クエリ {t1 - t0:.0f}秒、転送 {time.time() - t1:.0f}秒、{how})", flush=True)
     if df.empty:
         return pd.DataFrame(columns=["date", "code", "close", "adj_close", "volume", "turnover", "open", "high", "low"])
     df["date"] = pd.to_datetime(df["date"])

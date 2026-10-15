@@ -9,6 +9,7 @@
   --pos:#e66767; --neg:#6da7ec;
   --ma50:#1baf7a; --ma150:#eda100; --ma200:#4a3aa7; --pivot:#eb6834; --stop:#0b0b0b; --target:#008300; --zz:#52514e;
   --ok:#008300; --ng:#c42b2b; --warn:#b45309; --focus:#2a78d6;
+  --buy:#c2410c; --sell:#1d4ed8; --holdwin:rgba(230,103,103,.10); --holdloss:rgba(109,167,236,.14);
   --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",Meiryo,system-ui,-apple-system,"Segoe UI",sans-serif;
 }
 @media (prefers-color-scheme: dark){
@@ -17,7 +18,8 @@
     --grid:#2c2c2a; --axis:#383835; --line:rgba(255,255,255,.10); --wash:rgba(57,135,229,.14); --base:rgba(57,135,229,.10);
     --pos:#d45454; --neg:#3d84dc;
     --ma50:#199e70; --ma150:#c98500; --ma200:#9085e9; --pivot:#e8743f; --stop:#ffffff; --target:#3fb950; --zz:#c3c2b7;
-    --ok:#3fb950; --ng:#ff6b6b; --warn:#fab219; --focus:#3987e5; color-scheme:dark;
+    --ok:#3fb950; --ng:#ff6b6b; --warn:#fab219; --focus:#3987e5;
+    --buy:#fb923c; --sell:#60a5fa; --holdwin:rgba(212,84,84,.16); --holdloss:rgba(61,132,220,.18); color-scheme:dark;
   }
 }
 :root[data-theme="dark"]{
@@ -25,7 +27,8 @@
   --grid:#2c2c2a; --axis:#383835; --line:rgba(255,255,255,.10); --wash:rgba(57,135,229,.14); --base:rgba(57,135,229,.10);
   --pos:#d45454; --neg:#3d84dc;
   --ma50:#199e70; --ma150:#c98500; --ma200:#9085e9; --pivot:#e8743f; --stop:#ffffff; --target:#3fb950; --zz:#c3c2b7;
-  --ok:#3fb950; --ng:#ff6b6b; --warn:#fab219; --focus:#3987e5; color-scheme:dark;
+  --ok:#3fb950; --ng:#ff6b6b; --warn:#fab219; --focus:#3987e5;
+  --buy:#fb923c; --sell:#60a5fa; --holdwin:rgba(212,84,84,.16); --holdloss:rgba(61,132,220,.18); color-scheme:dark;
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -108,6 +111,18 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
 .btn{background:transparent;border:1px solid var(--axis);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
 .btn:hover{background:var(--wash)}
 .foot{display:flex;flex-direction:column;gap:6px}
+.modebar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+.modebar .seg button{padding:6px 16px;font-size:13px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px}
+.stat{border:1px solid var(--line);border-radius:8px;padding:6px 10px;display:flex;flex-direction:column}
+.stat span{font-size:11px;color:var(--fg2)}
+.stat b{font-size:17px;font-variant-numeric:tabular-nums}
+.filters{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;font-size:12px}
+.filters select{font:inherit;font-size:12px;padding:2px 6px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--fg)}
+.rpos{color:var(--ok);font-weight:700} .rneg{color:var(--ng);font-weight:700}
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:12px}
+.steps li{display:grid;grid-template-columns:5.5em 1fr;gap:8px}
+.steps b{color:var(--fg2);font-weight:600}
 .state{padding:28px 6px;color:var(--fg2);font-size:13px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .state strong{color:var(--fg)}
 #asof{font:inherit;font-size:13px;padding:2px 6px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--fg)}
@@ -126,10 +141,18 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
   <header>
     <div>
       <h1>VCPスクリーニング検証</h1>
-      <p class="note" id="sub">トレンドテンプレートを通過した銘柄のチャートに、プログラムが検出したベース・収縮・ピボット・損切りを重ねて表示します。</p>
+      <p class="note" id="sub">プログラムが検出したベース・収縮・ピボット・損切りを、チャートに重ねて確かめます。</p>
     </div>
     <div class="counts" id="counts"></div>
   </header>
+
+  <div class="modebar">
+    <div class="seg" id="mode" role="group" aria-label="表示する内容">
+      <button type="button" data-m="screen" aria-pressed="true">日々のスクリーニング</button>
+      <button type="button" data-m="bt" aria-pressed="false">バックテスト</button>
+    </div>
+    <p class="note" id="mode-note"></p>
+  </div>
 
   <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
 
@@ -146,6 +169,23 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
     </section>
 
     <section class="panel" id="detail" aria-label="選んだ銘柄"></section>
+  </div>
+
+  <div class="layout" id="bt" hidden>
+    <section class="panel" aria-label="バックテストのトレード">
+      <div class="stats" id="bt-stats"></div>
+      <div class="filters">
+        <label for="bt-variant">売買ルール <select id="bt-variant"></select></label>
+        <div class="seg" id="bt-result" role="group" aria-label="表示するシグナル">
+          <button type="button" data-r="trade" aria-pressed="true">売買</button>
+          <button type="button" data-r="skip" aria-pressed="false">見送り</button>
+        </div>
+        <label for="bt-sort">並び <select id="bt-sort"><option value="date">シグナル日</option><option value="r">損益(R)</option></select></label>
+      </div>
+      <p class="note" id="bt-note"></p>
+      <div class="list"><table id="bt-list"></table></div>
+    </section>
+    <section class="panel" id="bt-detail" aria-label="選んだトレード"></section>
   </div>
 
   <section class="panel foot">
@@ -204,8 +244,9 @@ function saveReview() { try { localStorage.setItem(rkey(), JSON.stringify(review
 /* ---------- 状態 ---------- */
 let stocks = [], byCode = {};
 const reasonKey = r => /^収縮\d+回$/.test(r) ? "収縮回数が範囲外" : r;
-const state = {tab: "vcp", reason: null, code: null, bars: innerWidth < 560 ? 63 : 130};
+const state = {mode: "screen", tab: "vcp", reason: null, code: null, bars: innerWidth < 560 ? 63 : 130};
 try { const t = localStorage.getItem("minervini-tab"); if (t) state.tab = t; } catch (e) { /* 無視 */ }
+try { const m = localStorage.getItem("minervini-mode"); if (m === "bt") state.mode = m; } catch (e) { /* 無視 */ }
 
 function statusClass(st) {
   if (!st) return "no";
@@ -372,16 +413,20 @@ let CH = null;
 function drawChart(x) {
   const wrap = $("#chart"); if (!wrap) return;
   if (!x.c) { wrap.replaceChildren(h("div", {class: "state"}, x.priceError || "チャートを読み込んでいます…")); CH = null; return; }
-  const len = x.c.length, n = Math.min(state.bars, len), i0 = len - n;
+  // 表示範囲 [i0, i1)。バックテストのトレードは x.win(ベースの手前〜手仕舞いの後)を使う
+  const len = x.c.length;
+  const [i0, i1] = x.win ? [Math.max(0, x.win[0]), Math.min(len, x.win[1])] : [len - Math.min(state.bars, len), len];
+  const n = i1 - i0;
   const W = Math.max(300, wrap.clientWidth || 700), narrow = W < 560;
   const mg = {l: 8, r: narrow ? 52 : 64, t: 12, b: 24}, H1 = narrow ? 240 : 330, H2 = 70, gap = 10;
   const pTop = mg.t, pBot = pTop + H1, vTop = pBot + gap, vBot = vTop + H2, H = vBot + mg.b;
   const plotW = W - mg.l - mg.r, sw = plotW / n, X = j => mg.l + (j - i0 + 0.5) * sw;
   const vals = [];
-  for (let i = i0; i < len; i++) { if (x.h[i] != null) vals.push(x.h[i]); if (x.l[i] != null) vals.push(x.l[i]); }
-  if (x.vcp) vals.push(x.stop, x.target_2r);
+  for (let i = i0; i < i1; i++) { if (x.h[i] != null) vals.push(x.h[i]); if (x.l[i] != null) vals.push(x.l[i]); }
+  if (x.vcp && !x.segs) vals.push(x.stop, x.target_2r);
   if (x.pivot != null) vals.push(x.pivot);
-  for (const m of [x.m50, x.m150, x.m200]) for (let i = i0; i < len; i++) if (m[i] != null) vals.push(m[i]);
+  for (const g of x.segs || []) if (g.v != null) vals.push(g.v);
+  for (const m of [x.m50, x.m150, x.m200]) for (let i = i0; i < i1; i++) if (m[i] != null) vals.push(m[i]);
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05 || 1; lo -= pad; hi += pad;
   const ly = Math.log, Y = v => pBot - (ly(v) - ly(lo)) / (ly(hi) - ly(lo)) * (pBot - pTop);   // 対数目盛(収縮の深さを見比べやすくする)
   const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${x.name}のローソク足、移動平均、検出した収縮とピボット`});
@@ -389,33 +434,39 @@ function drawChart(x) {
   const ticks = niceTicks(lo, hi, narrow ? 4 : 6);
   ticks.forEach(t => svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: Y(t), y2: Y(t), stroke: "var(--grid)"}),
     s("text", {class: "ax", x: W - mg.r + 6, y: Y(t) + 4}, fp(t))));
-  // ベース
+  // ベース(バックテストではシグナル日まで)
   if (x.start != null) {
-    const a = Math.max(x.start, i0);
-    if (a < len) svg.append(s("rect", {x: X(a) - sw / 2, y: pTop, width: X(len - 1) - X(a) + sw, height: pBot - pTop, fill: "var(--base)"}));
-    if (x.start >= i0) svg.append(s("text", {class: "ax", x: X(x.start) + 3, y: pBot - 6}, `ベース ${x.base_days}日`));
+    const a = Math.max(x.start, i0), b = Math.min(x.baseEnd ?? len - 1, i1 - 1);
+    if (a <= b) svg.append(s("rect", {x: X(a) - sw / 2, y: pTop, width: X(b) - X(a) + sw, height: pBot - pTop, fill: "var(--base)"}));
+    if (x.start >= i0 && x.start < i1) svg.append(s("text", {class: "ax", x: X(x.start) + 3, y: pBot - 6}, `ベース ${x.base_days}日`));
+  }
+  // 保有期間(バックテスト)
+  if (x.hold) {
+    const a = Math.max(x.hold[0], i0), b = Math.min(x.hold[1], i1 - 1);
+    if (a <= b) svg.append(s("rect", {x: X(a) - sw / 2, y: pTop, width: X(b) - X(a) + sw, height: pBot - pTop,
+      fill: x.hold[2] ? "var(--holdwin)" : "var(--holdloss)"}));
   }
   // 移動平均
   [["m200", "--ma200"], ["m150", "--ma150"], ["m50", "--ma50"]].forEach(([k, c]) => {
     let d = "", on = false;
-    for (let i = i0; i < len; i++) { const v = x[k][i]; if (v == null) { on = false; continue; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1); on = true; }
-    svg.append(s("path", {d, fill: "none", stroke: `var(${c})`, "stroke-width": 1.5, opacity: .9}));
+    for (let i = i0; i < i1; i++) { const v = x[k][i]; if (v == null) { on = false; continue; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1); on = true; }
+    svg.append(s("path", {d, fill: "none", stroke: `var(${c})`, "stroke-width": k === "m50" && x.hold ? 2.2 : 1.5, opacity: .9}));
   });
   // ローソク足
   const bw = Math.max(1, Math.min(9, sw * 0.65));
-  for (let i = i0; i < len; i++) {
+  for (let i = i0; i < i1; i++) {
     const o = x.o[i] ?? x.c[i - 1] ?? x.c[i], c = x.c[i]; if (c == null) continue;
     const col = c >= o ? "var(--pos)" : "var(--neg)";
     svg.append(s("line", {x1: X(i), x2: X(i), y1: Y(x.h[i] ?? c), y2: Y(x.l[i] ?? c), stroke: col}),
       s("rect", {x: X(i) - bw / 2, y: Math.min(Y(o), Y(c)), width: bw, height: Math.max(1, Math.abs(Y(o) - Y(c))), fill: col}));
   }
   // 検出した収縮(ZigZag)
-  const zz = (x.zz || []).filter(p => p[1] >= i0);
+  const zz = (x.zz || []).filter(p => p[1] >= i0 && p[1] < i1);
   if (zz.length > 1) {
     svg.append(s("path", {d: zz.map((p, k) => (k ? "L" : "M") + X(p[1]).toFixed(1) + " " + Y(p[2]).toFixed(1)).join(""), fill: "none", stroke: "var(--zz)", "stroke-width": 1.5, "stroke-dasharray": "5 3"}));
     const all = x.zz || [];
     all.forEach((p, k) => {
-      if (p[1] < i0) return;
+      if (p[1] < i0 || p[1] >= i1) return;
       const last = k === all.length - 1;
       svg.append(s("circle", {cx: X(p[1]), cy: Y(p[2]), r: 3.2, fill: last ? "var(--surface)" : "var(--zz)", stroke: "var(--zz)", "stroke-width": 1.5}));
       if (p[0] === "L" && k > 0 && all[k - 1][0] === "H") {
@@ -432,23 +483,48 @@ function drawChart(x) {
     svg.append(s("rect", {x: mg.l + 2, y: ty - 8, width: tw, height: 16, rx: 3, fill: "var(--surface)", stroke: `var(${col})`, "stroke-width": 1}),
       s("text", {class: "lbl", x: mg.l + 6, y: ty + 4, style: `fill:var(${col})`}, t));
   };
-  hline(x.pivot, "--pivot", null, "ピボット");
-  if (x.vcp) { hline(x.stop, "--stop", "6 4", "損切り"); hline(x.target_2r, "--target", "2 3", "2R"); }
+  if (x.segs) {          // バックテスト: 期間を区切った水平線(ピボット・損切り・建値ストップ)
+    for (const g of x.segs) {
+      const a = Math.max(g.from, i0), b = Math.min(g.to, i1 - 1);
+      if (g.v == null || a > b) continue;
+      svg.append(s("line", {x1: X(a) - sw / 2, x2: X(b) + sw / 2, y1: Y(g.v), y2: Y(g.v), stroke: `var(${g.col})`, "stroke-width": 1.8, "stroke-dasharray": g.dash}));
+      // ラベルは線の右端に寄せる(左端は買いの印やベースの始まりと重なりやすい)
+      svg.append(s("text", {class: "lbl", x: X(b) + sw / 2, y: Y(g.v) + (g.below ? 14 : -5), "text-anchor": "end", style: `fill:var(${g.col})`}, `${g.label} ${fp(g.v)}`));
+    }
+    for (const m of x.vlines || []) {
+      if (m.i < i0 || m.i >= i1) continue;
+      svg.append(s("line", {x1: X(m.i), x2: X(m.i), y1: pTop, y2: pBot, stroke: "var(--fg2)", "stroke-dasharray": "2 3"}),
+        s("text", {class: "lbl", x: X(m.i) + 3, y: pTop + 11}, m.label));
+    }
+    for (const m of x.marks || []) {          // 買い(▲)はその日の安値の下、売り(▼)は高値の上に置く(価格は表で確かめる)
+      if (m.i < i0 || m.i >= i1 || m.v == null) continue;
+      const buy = m.kind === "buy", cx = X(m.i), r = 7;
+      const cy = buy ? Y(x.l[m.i] ?? m.v) + 4 : Y(x.h[m.i] ?? m.v) - 4;
+      const pts = buy ? `${cx},${cy} ${cx - r},${cy + r * 1.6} ${cx + r},${cy + r * 1.6}` : `${cx},${cy} ${cx - r},${cy - r * 1.6} ${cx + r},${cy - r * 1.6}`;
+      svg.append(s("polygon", {points: pts, fill: buy ? "var(--buy)" : "var(--sell)", stroke: "var(--surface)", "stroke-width": 1.2}),
+        s("text", {class: "lbl", x: cx, y: buy ? cy + r * 1.6 + 13 : cy - r * 1.6 - 5, "text-anchor": "middle", style: `fill:var(${buy ? "--buy" : "--sell"})`}, m.label));
+    }
+  } else {
+    hline(x.pivot, "--pivot", null, "ピボット");
+    if (x.vcp) { hline(x.stop, "--stop", "6 4", "損切り"); hline(x.target_2r, "--target", "2 3", "2R"); }
+  }
   // 出来高
-  const vmax = Math.max(1, ...x.v.slice(i0).map(v => v || 0), ...x.va.slice(i0).map(v => v || 0));
+  const vmax = Math.max(1, ...x.v.slice(i0, i1).map(v => v || 0), ...x.va.slice(i0, i1).map(v => v || 0));
   const Yv = v => vBot - v / vmax * H2;
   if (x.dry) {
     const a = Math.max(x.dry[0], i0), b = x.dry[1] - 1;
-    if (b >= i0) svg.append(s("rect", {x: X(a) - sw / 2, y: vTop, width: X(b) - X(a) + sw, height: H2, fill: "var(--base)"}),
-      s("text", {class: "ax", x: X(b) + sw / 2 - 2, y: vTop + 10, "text-anchor": "end"}, "細りを見た期間"));
+    if (b >= i0 && a < i1) {
+      svg.append(s("rect", {x: X(a) - sw / 2, y: vTop, width: X(b) - X(a) + sw, height: H2, fill: "var(--base)"}));
+      if (!narrow) svg.append(s("text", {class: "ax", x: X(b) + sw / 2 - 2, y: vTop + 10, "text-anchor": "end"}, "細りを見た期間"));
+    }
   }
-  for (let i = i0; i < len; i++) {
+  for (let i = i0; i < i1; i++) {
     const v = x.v[i]; if (!v) continue;
     const up = x.c[i] >= (x.o[i] ?? x.c[i - 1] ?? x.c[i]);
     svg.append(s("rect", {x: X(i) - bw / 2, y: Yv(v), width: bw, height: vBot - Yv(v), fill: up ? "var(--pos)" : "var(--neg)", opacity: .6}));
   }
   let d = "", on = false;
-  for (let i = i0; i < len; i++) { const v = x.va[i]; if (v == null) { on = false; continue; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Yv(v).toFixed(1); on = true; }
+  for (let i = i0; i < i1; i++) { const v = x.va[i]; if (v == null) { on = false; continue; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Yv(v).toFixed(1); on = true; }
   svg.append(s("path", {d, fill: "none", stroke: "var(--fg2)", "stroke-width": 1.2}));
   svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: vBot, y2: vBot, stroke: "var(--axis)"}),
     s("text", {class: "ax", x: mg.l + 2, y: vTop + 10}, "出来高(線は50日平均)"));
@@ -570,47 +646,284 @@ async function loadDay(asof, fromBoot) {
   state.code = null;
   loadReview();
   banner(null);
-  $("#main").hidden = false;
   renderCounts();
+  if (state.mode !== "screen") return;
+  $("#main").hidden = false;
   renderList();
 }
+const clean = v => String(v).replace(/[^0-9A-Za-z_-]/g, "");   // SQL に埋め込む値(銘柄コード・日付・ルール名)以外の文字を除く
+// 銘柄 code の、from〜to の日足と移動平均。価格は配当調整後にそろえる(src/minervini.py と同じ)。
+// 200日線を from から描けるように、移動平均は from の約320暦日前から計算する
+const priceSQL = (code, from, to) => `WITH p AS (
+    SELECT date, adj_close AS c, volume AS v,
+      COALESCE(open * adj_close / NULLIF(close, 0), adj_close) AS o,
+      COALESCE(high * adj_close / NULLIF(close, 0), adj_close) AS hi,
+      COALESCE(low * adj_close / NULLIF(close, 0), adj_close) AS lo
+    FROM ${T("prices")}
+    WHERE code = '${clean(code)}' AND date <= DATE '${clean(to)}' AND date >= DATE_SUB(DATE '${clean(from)}', INTERVAL 320 DAY) AND adj_close IS NOT NULL),
+  w AS (
+    SELECT *,
+      IF(COUNT(c) OVER w50 = 50, AVG(c) OVER w50, NULL) AS m50,
+      IF(COUNT(c) OVER w150 = 150, AVG(c) OVER w150, NULL) AS m150,
+      IF(COUNT(c) OVER w200 = 200, AVG(c) OVER w200, NULL) AS m200,
+      IF(COUNT(v) OVER w50 = 50, AVG(v) OVER w50, NULL) AS va
+    FROM p
+    WINDOW w50 AS (ORDER BY date ROWS 49 PRECEDING), w150 AS (ORDER BY date ROWS 149 PRECEDING), w200 AS (ORDER BY date ROWS 199 PRECEDING))
+  SELECT CAST(date AS STRING) AS d, o, hi, lo, c, v, va, m50, m150, m200 FROM w WHERE date >= DATE '${clean(from)}' ORDER BY date`;
+function attachSeries(x, rows) {
+  const col = k => rows.map(r => r[k]);
+  Object.assign(x, {d: col("d"), o: col("o"), h: col("hi"), l: col("lo"), c: col("c"), v: col("v"), va: col("va"), m50: col("m50"), m150: col("m150"), m200: col("m200")});
+  const at = Object.fromEntries(x.d.map((d, i) => [d, i]));
+  // 日付 → 位置。休場日などで一致しなければ、その日以降で最初の位置
+  x.idx = d => d == null ? null : at[d] ?? (() => { const k = x.d.findIndex(v => v >= d); return k < 0 ? null : k; })();
+  let zz = []; try { zz = JSON.parse(x.zigzag || "[]"); } catch (e) { zz = []; }
+  x.zz = zz.map(([k, d, v]) => [k, at[d] ?? -1, v]);
+  x.start = x.base_start_s && at[x.base_start_s] != null ? at[x.base_start_s] : null;
+  x.dry = x.dry_from_s && x.dry_to_s && at[x.dry_to_s] != null ? [at[x.dry_from_s] ?? 0, at[x.dry_to_s] + 1] : null;
+}
+function addDays(d, n) { const t = new Date(d + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
 async function loadPrices(x) {
   if (!x || x.c || x.loading) return;
   x.loading = true; x.priceError = null;
-  const code = String(x.code).replace(/[^0-9A-Za-z]/g, ""), asof = D.as_of.replace(/[^0-9-]/g, "");
   try {
-    // 200日線を250営業日ぶん描くため、約450営業日(700暦日)を読む。価格は配当調整後にそろえる(src/minervini.py と同じ)
-    const rows = await bq(`WITH p AS (
-        SELECT date, adj_close AS c, volume AS v,
-          COALESCE(open * adj_close / NULLIF(close, 0), adj_close) AS o,
-          COALESCE(high * adj_close / NULLIF(close, 0), adj_close) AS hi,
-          COALESCE(low * adj_close / NULLIF(close, 0), adj_close) AS lo
-        FROM ${T("prices")}
-        WHERE code = '${code}' AND date <= DATE '${asof}' AND date >= DATE_SUB(DATE '${asof}', INTERVAL 700 DAY) AND adj_close IS NOT NULL),
-      w AS (
-        SELECT *,
-          IF(COUNT(c) OVER w50 = 50, AVG(c) OVER w50, NULL) AS m50,
-          IF(COUNT(c) OVER w150 = 150, AVG(c) OVER w150, NULL) AS m150,
-          IF(COUNT(c) OVER w200 = 200, AVG(c) OVER w200, NULL) AS m200,
-          IF(COUNT(v) OVER w50 = 50, AVG(v) OVER w50, NULL) AS va
-        FROM p
-        WINDOW w50 AS (ORDER BY date ROWS 49 PRECEDING), w150 AS (ORDER BY date ROWS 149 PRECEDING), w200 AS (ORDER BY date ROWS 199 PRECEDING))
-      SELECT CAST(date AS STRING) AS d, o, hi, lo, c, v, va, m50, m150, m200 FROM w ORDER BY date DESC LIMIT 250`);
-    rows.reverse();
-    const col = k => rows.map(r => r[k]);
-    Object.assign(x, {d: col("d"), o: col("o"), h: col("hi"), l: col("lo"), c: col("c"), v: col("v"), va: col("va"), m50: col("m50"), m150: col("m150"), m200: col("m200")});
-    const at = Object.fromEntries(x.d.map((d, i) => [d, i]));
-    let zz = []; try { zz = JSON.parse(x.zigzag || "[]"); } catch (e) { zz = []; }
-    x.zz = zz.map(([k, d, v]) => [k, at[d] ?? -1, v]);
-    x.start = x.base_start_s && at[x.base_start_s] != null ? at[x.base_start_s] : null;
-    x.dry = x.dry_from_s && x.dry_to_s && at[x.dry_to_s] != null ? [at[x.dry_from_s] ?? 0, at[x.dry_to_s] + 1] : null;
+    // 直近約250営業日(365暦日)
+    const rows = await bq(priceSQL(x.code, addDays(D.as_of, -365), D.as_of));
+    attachSeries(x, rows);
     if (!rows.length) { delete x.c; x.priceError = "この銘柄の株価がありません。"; }
   } catch (e) {
     x.priceError = errorText(e).filter(Boolean).join(" ");
   } finally {
     x.loading = false;
   }
-  if (state.code === x.code && state.tab !== "near") drawChart(x);
+  if (state.mode === "screen" && state.code === x.code && state.tab !== "near") drawChart(x);
+}
+
+/* ---------- バックテスト(minervini_backtest) ---------- */
+// 売買ルール(src/minervini_backtest.py の VARIANTS)。古い結果(stop1.0 など)は名前をそのまま出す
+const VLABEL = {vcp_pivot: "VCPのピボット抜け・損切りは収縮の安値", high52_8pct: "52週高値抜け・損切り8%", vcp_high52_8pct: "VCP＋52週高値抜け・損切り8%"};
+const VNOTE = {
+  vcp_pivot: "シグナルは、トレンドテンプレートを満たし、VCPと判定され、終値が出来高を伴ってピボットを初めて上抜けた日。損切りは最後の収縮の安値−0.5ATR(と買値−1.5ATRの遠い方)。",
+  high52_8pct: "シグナルは、トレンドテンプレートを満たし、終値が前日までの52週高値を初めて上抜けた日(VCPは問わない)。損切りは買値の8%下。",
+  vcp_high52_8pct: "シグナルは、52週高値抜けのうち、その日にVCPと判定されたもの。損切りは買値の8%下。",
+};
+const isHigh52 = x => (x.rule || "").includes("high52");
+const BT = {rows: [], loaded: false, loading: false, variant: "high52_8pct", result: "trade", sort: "date", key: null, px: {}, review: {}};
+try { BT.review = JSON.parse(localStorage.getItem("minervini-review-bt") || "{}") || {}; } catch (e) { BT.review = {}; }
+function saveBtReview() { try { localStorage.setItem("minervini-review-bt", JSON.stringify(BT.review)); } catch (e) { /* 無視 */ } }
+const btKey = x => `${x.variant}|${x.code}|${x.signal_date}`;
+const rKey = x => `${x.code}|${x.signal_date}`;          // 目視チェックは損切り幅によらずシグナル単位
+const fr = v => v == null ? "-" : (v > 0 ? "+" : "") + fx(v, 2) + "R";
+async function loadBT() {
+  if (BT.loaded || BT.loading) return;
+  BT.loading = true;
+  banner(["バックテストの結果を BigQuery から読み込んでいます…", ""]);
+  try {
+    // ルールごとの成績(保有中で見送ったシグナルは件数だけ)
+    const st = await bq(`SELECT variant, ANY_VALUE(period) AS period,
+        COUNTIF(result = '売買') AS n, COUNTIF(result = '売買' AND r_mult > 0) AS nwin,
+        AVG(IF(result = '売買', r_mult, NULL)) AS avg, SUM(IF(result = '売買', r_mult, 0)) AS total,
+        SUM(IF(result = '売買' AND r_mult > 0, r_mult, 0)) AS gwin, -SUM(IF(result = '売買' AND r_mult <= 0, r_mult, 0)) AS gloss,
+        COUNTIF(result != '売買' AND result != '見送り: 保有中') AS skip, COUNTIF(result = '見送り: 保有中') AS busy
+      FROM ${T("minervini_backtest")} GROUP BY variant ORDER BY variant`);
+    BT.stats = Object.fromEntries(st.map(r => [r.variant, r]));
+    BT.loaded = true;
+    const vs = st.map(r => r.variant);
+    if (!vs.includes(BT.variant)) BT.variant = vs[0];
+    $("#bt-variant").replaceChildren(...vs.map(v => h("option", {value: v, selected: v === BT.variant}, VLABEL[v] || v)));
+    BT.loading = false;
+    await loadVariant(BT.variant);
+  } catch (e) {
+    const t = errorText(e);
+    if (e && e.code === "tool_error" && /not found/i.test(String(e.message))) t.splice(0, 2, "まだバックテストの結果がありません。", "GitHub Actions の minervini-backtest を実行すると作られます。");
+    banner(t, () => { BT.loading = false; loadBT(); });
+  } finally {
+    BT.loading = false;
+  }
+}
+// 一覧に要る列だけを、ルールごとに読む(52週高値抜けは数千件あるため。保有中で見送ったシグナルは読まない)
+async function loadVariant(v) {
+  BT.byVariant = BT.byVariant || {};
+  if (!BT.byVariant[v]) {
+    banner(["バックテストの結果を BigQuery から読み込んでいます…", ""]);
+    try {
+      BT.byVariant[v] = await bq(`SELECT variant, rule, code, name, sector, signal_date, result, r_mult, ret_pct, exit_reason
+        FROM ${T("minervini_backtest")} WHERE variant = '${clean(v)}' AND result != '見送り: 保有中' ORDER BY signal_date, code`);
+    } catch (e) { banner(errorText(e), () => loadVariant(v)); return; }
+  }
+  if (BT.variant !== v) return;
+  BT.rows = BT.byVariant[v];
+  banner(null);
+  renderBT();
+}
+function btStats(v) {
+  const r = (BT.stats || {})[v] || {};
+  const nloss = (r.n || 0) - (r.nwin || 0);
+  return {n: r.n || 0, skip: r.skip || 0, busy: r.busy || 0, win: r.n ? r.nwin / r.n * 100 : null, avg: r.avg,
+    total: r.total, pf: r.gloss > 0 ? r.gwin / r.gloss : null, period: r.period,
+    // ペイオフレシオ = 勝ちトレードの平均利益 ÷ 負けトレードの平均損失(R)
+    payoff: r.nwin && nloss && r.gloss > 0 ? (r.gwin / r.nwin) / (r.gloss / nloss) : null};
+}
+function renderBT() {
+  if (!BT.loaded) return;
+  const all = BT.rows, st = btStats(BT.variant);
+  const tile = (lab, val) => h("div", {class: "stat"}, h("span", null, lab), h("b", null, val));
+  $("#bt-stats").replaceChildren(tile("売買", st.n + "件"), tile("勝率", st.win == null ? "-" : fx(st.win, 0) + "%"),
+    tile("平均", fr(st.avg)), tile("合計", fr(st.total)), tile("PF", st.pf == null ? "-" : fx(st.pf, 2)),
+    tile("ペイオフレシオ", st.payoff == null ? "-" : fx(st.payoff, 2)), tile("損益ゼロの勝率", st.payoff == null ? "-" : fx(100 / (1 + st.payoff), 0) + "%"),
+    tile("見送り", st.skip + "件"));
+  if (st.busy) $("#bt-stats").append(h("p", {class: "note", style: "grid-column:1/-1;margin:0"}, `ほかに、同じ銘柄を保有中だったため見送ったシグナルが ${st.busy} 件あります(一覧には出しません)。`));
+  document.querySelectorAll("#bt-result button").forEach(b => b.setAttribute("aria-pressed", b.dataset.r === BT.result ? "true" : "false"));
+  $("#bt-note").textContent = (VNOTE[BT.variant] || "") + (BT.result === "trade"
+    ? " シグナルの翌日始値で買い、終値が50日線を割った翌日始値で売ります(2Rで損切りを買値へ)。"
+    : " シグナルは出たが買わなかったもの。理由を確かめられます。") + (st.period ? ` シグナルの期間 ${st.period}。` : "");
+  let list = all.filter(x => BT.result === "trade" ? x.result === "売買" : x.result !== "売買");
+  list = BT.sort === "r" && BT.result === "trade" ? [...list].sort((a, b) => b.r_mult - a.r_mult) : list;
+  const total = list.length;
+  if (list.length > 400) list = list.slice(0, 400);     // 表示が重くなるので先頭400件まで
+  const tb = $("#bt-list");
+  tb.replaceChildren(
+    h("thead", null, h("tr", null, h("th", null, "シグナル日"), h("th", {style: "text-align:left"}, "銘柄"), h("th", null, BT.result === "trade" ? "損益" : "理由"))),
+    h("tbody", null, list.map(x => {
+      const rv = BT.review[rKey(x)] || {};
+      return h("tr", {class: btKey(x) === BT.key ? "sel" : null, "data-key": btKey(x), onclick: () => selectBT(btKey(x))},
+        h("td", null, x.signal_date),
+        h("td", {class: "wrap", style: "text-align:left"}, h("div", {class: "nm"}, h("span", null, x.name || x.code, " ", rv.mark ? h("span", {class: "mark " + rv.mark}, {ok: "妥当", ng: "要修正", q: "保留"}[rv.mark]) : ""),
+          h("small", null, x.code + (x.exit_reason ? "　" + x.exit_reason : "")))),
+        BT.result === "trade" ? h("td", null, h("span", {class: x.r_mult > 0 ? "rpos" : "rneg"}, fr(x.r_mult)), h("br"), h("small", {class: "muted"}, (x.ret_pct > 0 ? "+" : "") + fx(x.ret_pct, 1) + "%"))
+          : h("td", {class: "wrap", style: "text-align:left"}, x.result.replace("見送り: ", "")));
+    })));
+  if (!list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 3}, "該当するシグナルはありません。"))));
+  if (total > list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 3, class: "wrap", style: "text-align:left"},
+    `全${total}件のうち先頭の${list.length}件を表示しています。並びを変えると別の${list.length}件を見られます。`))));
+  if (!list.some(x => btKey(x) === BT.key)) { if (list.length) selectBT(btKey(list[0])); else $("#bt-detail").replaceChildren(h("p", {class: "note"}, "左のリストにシグナルがありません。")); }
+}
+async function selectBT(key) {
+  BT.key = key;
+  document.querySelectorAll("#bt-list tbody tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.key === key));
+  const x = BT.rows.find(r => btKey(r) === key);
+  if (!x) return;
+  if (!x.full) {          // 詳細(VCP の位置や売買の価格)は選んだときに読む
+    $("#bt-detail").replaceChildren(h("div", {class: "state"}, "読み込んでいます…"));
+    try {
+      const [r] = await bq(`SELECT * EXCEPT(loaded_at) FROM ${T("minervini_backtest")}
+        WHERE variant = '${clean(x.variant)}' AND code = '${clean(x.code)}' AND signal_date = DATE '${clean(x.signal_date)}' LIMIT 1`);
+      if (r) Object.assign(x, r, {base_start_s: r.base_start, dry_from_s: r.dry_from, dry_to_s: r.dry_to, full: true});
+    } catch (e) {
+      $("#bt-detail").replaceChildren(h("div", {class: "state"}, errorText(e).filter(Boolean).join(" ")));
+      return;
+    }
+  }
+  if (BT.key !== key) return;
+  renderBTDetail(x);
+  loadBTPrices(x);
+}
+async function loadBTPrices(x) {
+  if (!x || x.c) return;
+  const pk = rKey(x);
+  try {
+    if (!BT.px[pk]) {
+      // ベースの約1か月前から、手仕舞いの約1か月後まで(見送りはシグナルの約3か月後まで)
+      const from = addDays(x.base_start || x.signal_date, -45), to = addDays(x.exit_date || x.signal_date, x.exit_date ? 45 : 90);
+      BT.px[pk] = bq(priceSQL(x.code, from, to));
+    }
+    const rows = await BT.px[pk];
+    if (!rows.length) throw {code: "tool_error", message: "この銘柄の株価がありません。"};
+    attachSeries(x, rows);
+    buildTradeOverlay(x);
+  } catch (e) {
+    delete BT.px[pk];
+    x.priceError = errorText(e).filter(Boolean).join(" ");
+  }
+  if (state.mode === "bt" && BT.key === btKey(x)) drawChart(x);
+}
+function buildTradeOverlay(x) {
+  const sig = x.idx(x.signal_date), ent = x.idx(x.entry_date), ext = x.idx(x.exit_date), be = x.idx(x.breakeven_date);
+  x.win = [0, x.c.length];
+  x.baseEnd = sig;
+  x.vcp = true;
+  x.vlines = sig == null ? [] : [{i: sig, label: "シグナル"}];
+  x.segs = [];
+  if (sig != null) {
+    if (isHigh52(x)) x.segs.push({from: Math.max(0, sig - 60), to: sig, v: x.pivot, col: "--pivot", label: "52週高値"});
+    else if (x.start != null) x.segs.push({from: x.start, to: sig, v: x.pivot, col: "--pivot", label: "ピボット"});
+  }
+  if (x.result === "売買" && ent != null && ext != null) {
+    const stopEnd = be != null ? be - 1 : ext;
+    x.segs.push({from: ent, to: stopEnd, v: x.stop, col: "--stop", dash: "6 4", label: "損切り", below: true});
+    if (be != null) x.segs.push({from: be, to: ext, v: x.entry, col: "--stop", dash: "2 3", label: "建値ストップ", below: true});
+    x.marks = [{i: ent, v: x.entry, kind: "buy", label: "買い"}, {i: ext, v: x.exit, kind: "sell", label: "売り"}];
+    x.hold = [ent, ext, x.r_mult > 0];
+  } else {
+    if (sig != null) x.segs.push({from: sig, to: Math.min(sig + 10, x.c.length - 1), v: x.stop, col: "--stop", dash: "6 4", label: "損切り(予定)", below: true});
+    x.marks = ent != null && x.entry != null ? [{i: ent, v: x.entry, kind: "buy", label: "翌日始値"}] : [];
+    x.hold = null;
+  }
+}
+function renderBTDetail(x) {
+  const box = $("#bt-detail");
+  if (!x) { box.replaceChildren(); return; }
+  const traded = x.result === "売買", rv = BT.review[rKey(x)] || {};
+  const step = (lab, ...v) => h("li", null, h("b", null, lab), h("span", null, ...v));
+  box.replaceChildren(
+    h("div", {class: "detail-head"},
+      h("div", {class: "detail-title"}, x.name || x.code, h("small", null, `${x.code}　${x.sector || ""}`)),
+      traded ? h("span", {class: "pill " + (x.r_mult > 0 ? "go" : "skip")}, `${fr(x.r_mult)}　${x.exit_reason}`) : h("span", {class: "pill skip"}, x.result)),
+    h("div", {class: "key"},
+      h("span", null, h("i", {style: "border-color:var(--ma50);border-top-width:3px"}), "50日線(売りの基準)"), h("span", null, h("i", {style: "border-color:var(--ma150)"}), "150日線"),
+      h("span", null, h("i", {style: "border-color:var(--ma200)"}), "200日線"), h("span", null, h("i", {class: "box", style: "background:var(--base)"}), "ベース"),
+      h("span", null, h("i", {style: "border-color:var(--zz);border-top-style:dashed"}), "検出した収縮"), h("span", null, h("i", {style: "border-color:var(--pivot)"}), isHigh52(x) ? "52週高値" : "ピボット"),
+      h("span", null, h("i", {style: "border-color:var(--stop);border-top-style:dashed"}), "損切り"),
+      h("span", null, h("span", {style: "color:var(--buy)"}, "▲"), "買い"), h("span", null, h("span", {style: "color:var(--sell)"}, "▼"), "売り"),
+      traded ? h("span", null, h("i", {class: "box", style: `background:var(${x.r_mult > 0 ? "--holdwin" : "--holdloss"})`}), "保有期間") : null),
+    h("div", {class: "chart", id: "chart"}),
+    h("div", {class: "cols"},
+      h("div", {class: "card"}, h("h3", null, "エントリー条件"), h("dl", {class: "kv"},
+        h("dt", null, "シグナル日"), h("dd", null, x.signal_date),
+        h("dt", null, "VCP"), h("dd", null, x.vcp_ok === false ? "判定されず" : "判定あり"),
+        h("dt", null, "収縮"), h("dd", null, x.depths || "-"),
+        h("dt", null, "ベース"), h("dd", null, x.base_days == null ? "-" : `${x.base_days}日`),
+        h("dt", null, "出来高の細り"), h("dd", null, x.dryup == null ? "-" : `50日平均の${fx(x.dryup * 100, 0)}%`),
+        h("dt", null, "ブレイク日の出来高"), h("dd", null, x.breakout_vol == null ? "-" : `50日平均の${fx(x.breakout_vol, 1)}倍`),
+        h("dt", null, isHigh52(x) ? "前日までの52週高値" : "ピボット"), h("dd", null, fp(x.pivot)),
+        h("dt", null, "RS / ATR"), h("dd", null, `${fx(x.rs, 0)} / ${fx(x.atr_pct, 1)}%`)),
+        h("p", {class: "note"}, VNOTE[x.variant] || "")),
+      h("div", {class: "card"}, h("h3", null, "売買の流れ"), h("ul", {class: "steps"},
+        step("買い", traded ? `${x.entry_date}　${fp(x.entry)}(翌日始値)` : x.result),
+        step("損切り", `${fp(x.stop)}(${x.stop_basis}${x.risk_pct != null ? "、−" + fx(x.risk_pct, 1) + "%" : ""})`),
+        traded ? step("建値へ", x.breakeven_date ? `${x.breakeven_date} から損切りを買値 ${fp(x.entry)} に` : "なし(2Rに届かず)") : null,
+        traded ? step("売り", `${x.exit_date}　${fp(x.exit)}(${x.exit_reason})`) : null)),
+      traded ? h("div", {class: "card"}, h("h3", null, "結果"), h("dl", {class: "kv"},
+        h("dt", null, "損益"), h("dd", null, h("span", {class: x.r_mult > 0 ? "rpos" : "rneg"}, fr(x.r_mult))),
+        h("dt", null, "騰落率"), h("dd", null, (x.ret_pct > 0 ? "+" : "") + fx(x.ret_pct, 1) + "%"),
+        h("dt", null, "保有日数"), h("dd", null, `${x.hold_days}営業日`),
+        h("dt", null, "保有中の最大含み益"), h("dd", null, fr(x.mfe_r)),
+        h("dt", null, "1R(買値−損切り)"), h("dd", null, `${fp(x.entry - x.stop)}(${fx(x.risk_pct, 1)}%)`))) : null),
+    h("div", {class: "review"},
+      h("span", {class: "note"}, "判定と売買は妥当？"),
+      h("div", {class: "seg", role: "group", "aria-label": "目視チェック"}, [["ok", "妥当"], ["ng", "要修正"], ["q", "保留"]].map(([k, lab]) =>
+        h("button", {type: "button", "aria-pressed": rv.mark === k ? "true" : "false", onclick: () => {
+          const cur = BT.review[rKey(x)] || {}; BT.review[rKey(x)] = {...cur, mark: cur.mark === k ? null : k}; saveBtReview(); renderBT(); }}, lab))),
+      h("input", {id: "bt-memo", type: "text", placeholder: "メモ(例: ブレイクではなく窓開けの上ひげ)", value: rv.memo || "", "aria-label": "メモ",
+        oninput: e => { BT.review[rKey(x)] = {...(BT.review[rKey(x)] || {}), memo: e.target.value}; saveBtReview(); }})));
+  drawChart(x);
+}
+
+/* ---------- 表示の切り替え ---------- */
+function setMode(m) {
+  state.mode = m;
+  try { localStorage.setItem("minervini-mode", m); } catch (e) { /* 無視 */ }
+  document.querySelectorAll("#mode button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false"));
+  $("#mode-note").textContent = m === "bt" ? "2021〜2025年のシグナルを、売買まで再現した結果です。売買ルールを切り替えて比べられます。" : "毎営業日のスクリーニング結果です。";
+  $("#counts").hidden = m !== "screen";
+  CH = null;
+  if (m === "bt") {
+    $("#main").hidden = true; $("#detail").replaceChildren();
+    $("#bt").hidden = false;
+    if (BT.loaded) renderBT(); else loadBT();
+  } else {
+    $("#bt").hidden = true; $("#bt-detail").replaceChildren(); BT.key = null;
+    if (stocks.length) { $("#main").hidden = false; state.code = null; renderList(); } else boot();
+  }
 }
 
 /* ---------- コピー ---------- */
@@ -618,6 +931,10 @@ function reviewText() {
   const lines = [`VCPスクリーニング検証 基準日 ${D.as_of}`];
   for (const x of stocks) { const r = review[x.code]; if (!r || (!r.mark && !r.memo)) continue;
     lines.push(`${x.code} ${x.name}【${x.vcp ? "VCP " + x.status : "不合格: " + x.reasons.join("、")}】 ${({ok: "妥当", ng: "要修正", q: "保留"})[r.mark] || "-"}${r.memo ? " / " + r.memo : ""}`); }
+  const bl = [];
+  for (const x of BT.rows.filter(r => r.variant === BT.variant)) { const r = BT.review[rKey(x)]; if (!r || (!r.mark && !r.memo)) continue;
+    bl.push(`${x.signal_date} ${x.code} ${x.name || ""}【${x.result === "売買" ? fr(x.r_mult) + " " + x.exit_reason : x.result}】 ${({ok: "妥当", ng: "要修正", q: "保留"})[r.mark] || "-"}${r.memo ? " / " + r.memo : ""}`); }
+  if (bl.length) lines.push("", `バックテスト(${VLABEL[BT.variant] || BT.variant})`, ...bl);
   return lines.length > 1 ? lines.join("\n") : "";
 }
 $("#copy").addEventListener("click", () => {
@@ -635,6 +952,12 @@ document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click
   renderList();
 }));
 document.addEventListener("pointermove", e => { if (e.target.closest && e.target.closest("#chart")) hover(e); else if (CH) { CH.cross.setAttribute("visibility", "hidden"); $("#tip").style.display = "none"; } });
-let rz = 0; addEventListener("resize", () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => { if (state.code && state.tab !== "near") drawChart(byCode[state.code]); }); });
-boot();
+let rz = 0; addEventListener("resize", () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => {
+  if (state.mode === "bt") { const x = BT.rows.find(r => btKey(r) === BT.key); if (x) drawChart(x); }
+  else if (state.code && state.tab !== "near") drawChart(byCode[state.code]); }); });
+document.querySelectorAll("#mode button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.m)));
+document.querySelectorAll("#bt-result button").forEach(b => b.addEventListener("click", () => { BT.result = b.dataset.r; renderBT(); }));
+$("#bt-variant").addEventListener("change", e => { BT.variant = e.target.value; BT.key = null; loadVariant(BT.variant); });
+$("#bt-sort").addEventListener("change", e => { BT.sort = e.target.value; renderBT(); });
+setMode(state.mode);
 </script>
