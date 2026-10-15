@@ -78,6 +78,7 @@ MAX_FIRST_DEPTH = 0.35     # 最初の収縮の深さの上限
 MAX_FINAL_DEPTH = 0.10     # 最後の収縮の深さの上限(タイトな値動き)
 FINAL_TOL = 1.10           # 最後の収縮は、それまでの収縮で最も浅いもののこの倍率以下(ほぼ同じ深さは許容)。
                            # 途中で一度深くなっても、最後が最もタイトなら可
+MID_TOL = 1.10             # 途中の収縮は、最初の収縮のこの倍率以下(最初より深い収縮が途中にあるものは VCP としない)
 FINAL_VS_FIRST = 0.5       # 最後の収縮は最初の収縮のこの倍率以下
 VOL_AVG_DAYS = 50
 DRYUP_DAYS = 10            # 出来高の細りを見る直近日数
@@ -176,14 +177,18 @@ def zigzag(high: np.ndarray, low: np.ndarray, th: float, first: str = "H") -> li
     """先頭から始まる ZigZag。確定した転換点 ('H'/'L', 位置, 値) の列を返す。
 
     先頭は first で指定した種類の転換点(既定は高値 = ベースの起点)。最後に、まだ確定していない進行中の極値を付ける。
+    起点の日の安値(高値)は使わず、翌日から追う。1日の中で高値と安値のどちらが先かは分からず、
+    起点の日の値幅を「高値の後の下落」と数えてしまうため(決算などで値幅の大きい日に起きる)。
     """
+    if len(high) < 2:
+        return [(first, 0, high[0] if first == "H" else low[0])] * 2
     if first == "H":
         pts = [("H", 0, high[0])]
-        mode, ext_i, ext_v = "down", 0, low[0]    # 起点の高値から下落を追う
+        mode, ext_i, ext_v = "down", 1, low[1]    # 起点の高値から下落を追う
     else:
         pts = [("L", 0, low[0])]
-        mode, ext_i, ext_v = "up", 0, high[0]     # 起点の安値から上昇を追う
-    for i in range(1, len(high)):
+        mode, ext_i, ext_v = "up", 1, high[1]     # 起点の安値から上昇を追う
+    for i in range(2, len(high)):
         if mode == "down":
             if low[i] < ext_v:
                 ext_i, ext_v = i, low[i]
@@ -264,6 +269,8 @@ def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Ser
         reasons.append("最初の収縮が深い")
     if depths[-1] > MAX_FINAL_DEPTH:
         reasons.append("最後の収縮が深い")
+    if len(depths) >= 3 and max(depths[1:-1]) > depths[0] * MID_TOL:
+        reasons.append("途中の収縮が最初より深い")
     if len(depths) >= 2 and depths[-1] > min(depths[:-1]) * FINAL_TOL:
         reasons.append("最後の収縮が最も浅くない")
     if len(depths) >= 2 and depths[-1] > depths[0] * FINAL_VS_FIRST:
