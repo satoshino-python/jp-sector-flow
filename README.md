@@ -61,6 +61,7 @@ Yahooは分割や配当があると過去の値まで書き換えるため、直
 | `prices` | 株価(日付でパーティション、銘柄コードでクラスタ)。一時テーブルへロード → `MERGE`(キーは date, code)で反映するので、Yahooが過去値を書き換えた場合も上書きされる |
 | `universe` | 対象銘柄リスト(毎回全置換。33業種、規模区分、TOPIXウエイトを含む) |
 | `sector_summary` | 業種ごとの最新指標(`as_of` × 業種で日ごとに積み上げ) |
+| `minervini_screen` | ミネルヴィニのスクリーニング結果(`as_of` × 銘柄で日ごとに積み上げ。ZigZag の転換点や損切り位置を含む) |
 | `sector_timeseries` | 直近120営業日の相対強度(ETF・時価総額加重・均等加重)・売買代金シェアの推移(毎回全置換) |
 
 - 書き込みはロードジョブのみ(無料)。ストリーミング挿入は使いません。クエリには `maximum_bytes_billed`(1GB)を付けています
@@ -92,15 +93,19 @@ Actionsを手動で動かす以外に、`trigger/run.txt` を更新して `main`
 
 ## 個別銘柄スクリーナー(ミネルヴィニの成長株投資法)
 
-`src/minervini.py` は、ミネルヴィニのトレンドテンプレートで候補を絞り、VCP(ボラティリティ収縮パターン)の買いポイントと、銘柄ごとのボラティリティ(ATR)を加味した損切り位置を出します。結果は `data/minervini.csv` です。
+`src/minervini.py` は、ミネルヴィニのトレンドテンプレートで候補を絞り、VCP(ボラティリティ収縮パターン)の買いポイントと、銘柄ごとのボラティリティ(ATR)を加味した損切り位置を出します。
+毎営業日 `daily-update` の中で実行し、結果を BigQuery の `minervini_screen` に日付ごとに貯めます(テンプレートを6条件以上満たした銘柄。同じ日の再実行は上書き)。
 
 ```bash
 python src/minervini.py --bq                      # BigQuery の prices から直接読む(要認証)
 python src/minervini.py --bq --as-of 2026-09-01   # 過去のある日時点で判定
 python src/minervini.py --bq --equity 5000000     # 資金額から株数(100株単位)も出す
+python src/minervini.py --bq --save               # 結果を BigQuery の minervini_screen に保存
 ```
 
-GitHub Actions の *minervini-screen* を手動実行しても動きます(結果は成果物 `minervini` に入ります)。
+過去の日付で実行し直すときは、GitHub Actions の *minervini-screen* を判定日を指定して手動実行します(BigQuery に保存されます)。
+
+判定の検証用ページは `artifact/minervini.html` です。BigQuery の `minervini_screen` と `prices` を、閲覧している人の Google Cloud BigQuery コネクタで読み、検出したベース・収縮・ピボット・損切りをチャートに重ねて表示します(データはページに埋め込みません)。
 
 | 段階 | 内容 |
 |---|---|

@@ -28,6 +28,7 @@
   --ok:#3fb950; --ng:#ff6b6b; --warn:#fab219; --focus:#3987e5; color-scheme:dark;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{background:var(--bg);color:var(--fg);font:14px/1.6 var(--sans);
   padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:20px 48px}
 .wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
@@ -107,6 +108,11 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
 .btn{background:transparent;border:1px solid var(--axis);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
 .btn:hover{background:var(--wash)}
 .foot{display:flex;flex-direction:column;gap:6px}
+.state{padding:28px 6px;color:var(--fg2);font-size:13px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.state strong{color:var(--fg)}
+#asof{font:inherit;font-size:13px;padding:2px 6px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--fg)}
+.banner{border:1px solid var(--axis);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;background:var(--surface)}
+.banner p{margin:0;max-width:75ch}
 .foot p{margin:0;max-width:80ch}
 #tip{position:fixed;z-index:20;pointer-events:none;background:var(--surface);color:var(--fg);border:1px solid var(--axis);
   border-radius:6px;padding:7px 10px;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,.18);display:none;min-width:150px}
@@ -125,7 +131,9 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
     <div class="counts" id="counts"></div>
   </header>
 
-  <div class="layout">
+  <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
+
+  <div class="layout" id="main" hidden>
     <section class="panel" aria-label="銘柄リスト">
       <div class="seg" id="tabs" role="group" aria-label="表示する銘柄">
         <button type="button" data-t="vcp" aria-pressed="true">VCP判定</button>
@@ -154,11 +162,17 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
 </div>
 <div id="tip" role="tooltip"></div>
 
-<script id="data" type="application/json">__MINERVINI_JSON__</script>
 <script>
 "use strict";
-const D = JSON.parse(document.getElementById("data").textContent);
-const P = D.params;
+/* データは BigQuery から、閲覧している人の Google Cloud BigQuery コネクタで読む(ページには埋め込まない)。
+   minervini_screen ... src/minervini.py --save が書く判定結果(基準日 × 銘柄)
+   prices           ... 株価(チャート用。選んだ銘柄だけ読む) */
+const BQ = "Google Cloud BigQuery", PROJECT = "jp-sector-flow", DATASET = "sector_flow";
+// しきい値は src/minervini.py 冒頭の定数と同じ値(表示用)。向こうを変えたらここも合わせる
+const P = {MIN_ABOVE_LOW: 0.30, MAX_BELOW_HIGH: 0.25, MIN_RS: 70, MIN_BASE_DAYS: 15, ZZ_MIN_PCT: 0.03, ZZ_ATR_MULT: 1.5,
+  MIN_CONTRACTIONS: 2, MAX_CONTRACTIONS: 6, MAX_FIRST_DEPTH: 0.35, MAX_FINAL_DEPTH: 0.10, FINAL_VS_FIRST: 0.5,
+  DRYUP_DAYS: 10, MAX_DRYUP_RATIO: 0.85};
+const D = {as_of: null, dates: [], near: []};
 const $ = q => document.querySelector(q);
 const NS = "http://www.w3.org/2000/svg";
 function h(tag, attrs, ...kids) {
@@ -182,14 +196,13 @@ const pct = (v, d = 0) => v == null ? "-" : fx(v * 100, d) + "%";
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 
 /* ---------- 目視チェック(このブラウザだけに保存) ---------- */
-const RKEY = "minervini-review-" + D.as_of;
 let review = {};
-try { review = JSON.parse(localStorage.getItem(RKEY) || "{}") || {}; } catch (e) { review = {}; }
-function saveReview() { try { localStorage.setItem(RKEY, JSON.stringify(review)); } catch (e) { /* 保存できなくても表示は続ける */ } }
+const rkey = () => "minervini-review-" + D.as_of;
+function loadReview() { try { review = JSON.parse(localStorage.getItem(rkey()) || "{}") || {}; } catch (e) { review = {}; } }
+function saveReview() { try { localStorage.setItem(rkey(), JSON.stringify(review)); } catch (e) { /* 保存できなくても表示は続ける */ } }
 
 /* ---------- 状態 ---------- */
-const stocks = D.stocks.map(x => ({...x, reasons: (x.vcp_note || "").split(" / ").filter(Boolean)}));
-const byCode = Object.fromEntries(stocks.map(x => [x.code, x]));
+let stocks = [], byCode = {};
 const reasonKey = r => /^収縮\d+回$/.test(r) ? "収縮回数が範囲外" : r;
 const state = {tab: "vcp", reason: null, code: null, bars: innerWidth < 560 ? 63 : 130};
 try { const t = localStorage.getItem("minervini-tab"); if (t) state.tab = t; } catch (e) { /* 無視 */ }
@@ -216,8 +229,9 @@ const lastOf = v => Array.isArray(v) ? v[v.length - 1] : v;
 function renderCounts() {
   const nv = stocks.filter(x => x.vcp).length;
   $("#counts").replaceChildren(
-    h("span", null, "基準日 ", h("b", {style: "font-size:15px"}, D.as_of)),
-    h("span", null, h("b", null, stocks.length), `/ ${D.n_universe} テンプレート通過`),
+    h("label", {for: "asof"}, "基準日 ", h("select", {id: "asof", onchange: e => loadDay(e.target.value)},
+      D.dates.map(d => h("option", {value: d, selected: d === D.as_of}, d)))),
+    h("span", null, h("b", null, stocks.length), "テンプレート通過"),
     h("span", null, h("b", null, nv), "VCP判定"),
     h("span", null, h("b", null, stocks.length - nv), "VCP不合格"));
 }
@@ -272,9 +286,10 @@ function renderList() {
   if (!list.some(x => x.code === state.code)) { if (list.length) select(list[0].code); else $("#detail").replaceChildren(h("p", {class: "note"}, "左のリストに銘柄がありません。")); }
 }
 function renderNearDetail() {
-  $("#detail").replaceChildren(h("h2", null, "トレンドテンプレートの条件別の通過数"),
-    h("p", {class: "note"}, `対象 ${D.n_universe} 銘柄のうち、各条件を満たした銘柄数。8条件すべてを満たしたのは ${stocks.length} 銘柄です。`),
-    h("ul", {class: "checks"}, TT_LABELS.map(([lab], i) => h("li", null, h("span", null, ""), h("span", null, lab), h("span", {class: "r"}, `${D.tt_counts[i]} 銘柄`)))));
+  const cnt = TT_LABELS.map((_, i) => D.near.filter(x => !x.tt[i]).length);
+  $("#detail").replaceChildren(h("h2", null, "惜しい銘柄が満たさなかった条件"),
+    h("p", {class: "note"}, `6〜7条件を満たした ${D.near.length} 銘柄のうち、各条件を満たさなかった銘柄数。`),
+    h("ul", {class: "checks"}, TT_LABELS.map(([lab], i) => h("li", null, h("span", null, ""), h("span", null, lab), h("span", {class: "r"}, `${cnt[i]} 銘柄`)))));
 }
 
 /* ---------- 詳細 ---------- */
@@ -283,6 +298,7 @@ function select(code, fromNear) {
   state.code = code;
   document.querySelectorAll("#list tbody tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.code === code));
   renderDetail();
+  loadPrices(byCode[code]);
 }
 function vcpChecks(x) {
   const d = (x.depths || "").split(" → ").map(t => parseFloat(t) / 100).filter(v => isFinite(v));
@@ -354,6 +370,7 @@ function setMark(code, k) {
 let CH = null;
 function drawChart(x) {
   const wrap = $("#chart"); if (!wrap) return;
+  if (!x.c) { wrap.replaceChildren(h("div", {class: "state"}, x.priceError || "チャートを読み込んでいます…")); CH = null; return; }
   const len = x.c.length, n = Math.min(state.bars, len), i0 = len - n;
   const W = Math.max(300, wrap.clientWidth || 700), narrow = W < 560;
   const mg = {l: 8, r: narrow ? 52 : 64, t: 12, b: 24}, H1 = narrow ? 240 : 330, H2 = 70, gap = 10;
@@ -465,6 +482,136 @@ function hover(e) {
   tip.style.top = clamp(e.clientY + 14, 4, innerHeight - th - 4) + "px";
 }
 
+/* ---------- BigQuery(閲覧者のコネクタ経由) ---------- */
+const mcpP = window.claude && window.claude.use ? window.claude.use("mcp") : Promise.resolve(null);
+const T = t => "`" + PROJECT + "." + DATASET + "." + t + "`";
+function conv(v, type) {
+  if (v == null) return null;
+  if (/^(FLOAT|FLOAT64|INTEGER|INT64|NUMERIC|BIGNUMERIC)$/.test(type)) return Number(v);
+  if (/^(BOOLEAN|BOOL)$/.test(type)) return v === true || v === "true";
+  return v;
+}
+async function bq(sql) {
+  const mcp = await mcpP;
+  if (!mcp) throw {code: "no_mcp"};
+  const call = async (tool, input, retried) => {
+    try { return (await mcp.callTool(BQ, tool, input)).payload; }
+    catch (e) {
+      if (e && e.retryable && !retried) {   // 一時的な失敗は1回だけ待って再試行(読み取りのみ)
+        await new Promise(r => setTimeout(r, (e.retryAfterMs || 1500) + Math.random() * 800));
+        return call(tool, input, true);
+      }
+      throw e;
+    }
+  };
+  let res = await call("execute_sql_readonly", {projectId: PROJECT, query: sql, timeoutMs: 30000});
+  if (typeof res === "string") res = JSON.parse(res);
+  for (let k = 0; res && res.jobComplete === false && k < 4; k++) {
+    const ref = res.jobReference || {}, id = ref.jobId || res.jobId;
+    if (!id) throw {code: "incomplete"};
+    res = await call("get_query_results", {projectId: PROJECT, jobId: id, location: ref.location || "asia-northeast1", timeoutMs: 30000});
+    if (typeof res === "string") res = JSON.parse(res);
+  }
+  if (!res || res.jobComplete === false) throw {code: "incomplete"};
+  const fields = (res.schema && res.schema.fields) || [];
+  return (res.rows || []).map(r => Object.fromEntries(fields.map((f, i) => [f.name, conv(r.f[i] && r.f[i].v, f.type)])));
+}
+function errorText(e) {
+  const c = e && e.code;
+  if (c === "no_mcp" || c === "not_granted" || c === "capability_disabled" || c === "capability_removed")
+    return ["このページはデータを BigQuery から読み込みます。", "claude.ai でこのページを開くと、Google Cloud BigQuery コネクタを使って読み込みます。"];
+  if (c === "server_not_connected") return ["Google Cloud BigQuery コネクタが見つかりません。", "claude.ai の 設定 → コネクタ で Google Cloud BigQuery を追加してから、ページを開き直してください。"];
+  if (c === "needs_reauth") return ["Google Cloud BigQuery コネクタの再接続が必要です。", "claude.ai の 設定 → コネクタ で Google Cloud BigQuery につなぎ直してください。"];
+  if (c === "selection_required") return ["Google Cloud BigQuery コネクタが複数あります。", "表示された案内で使うコネクタを1つ選んでください。"];
+  if (c === "not_in_manifest" || c === "approval_required" || c === "consent_required")
+    return ["BigQuery の読み込みが許可されていません。", "下のボタンから読み込むと、許可を求める案内が出ます。"];
+  if (c === "blocked_by_policy") return ["組織の設定で、このページから BigQuery を使えません。", ""];
+  if (c === "tool_error") return ["BigQuery がエラーを返しました。", String((e && e.message) || "").slice(0, 300)];
+  if (c === "incomplete") return ["BigQuery の集計が時間内に終わりませんでした。", "少し待ってから読み込み直してください。"];
+  return ["BigQuery から読み込めませんでした。", String((e && (e.message || e.code)) || "")];
+}
+function banner(lines, retry) {
+  const b = $("#banner");
+  if (!lines) { b.hidden = true; return; }
+  b.hidden = false;
+  b.replaceChildren(...[h("p", null, h("strong", null, lines[0])), lines[1] ? h("p", {class: "note"}, lines[1]) : null,
+    retry ? h("div", null, h("button", {class: "btn", type: "button", onclick: retry}, "読み込む")) : null].filter(Boolean));
+}
+const STATUS_RANK = st => !st ? 3 : st.startsWith("ブレイク") && !st.includes("不足") ? 0 : st === "ピボット接近" ? 1 : 2;
+function toStock(r) {
+  return {...r, tt: [1, 2, 3, 4, 5, 6, 7, 8].map(i => !!r["tt" + i]), reasons: (r.vcp_note || "").split(" / ").filter(Boolean)};
+}
+async function boot() {
+  banner(["BigQuery から読み込んでいます…", ""]);
+  try {
+    const ds = await bq(`SELECT DISTINCT CAST(as_of AS STRING) AS d FROM ${T("minervini_screen")} ORDER BY d DESC LIMIT 120`);
+    D.dates = ds.map(r => r.d);
+    if (!D.dates.length) { banner(["まだスクリーニング結果がありません。", "GitHub Actions の minervini-screen か daily-update が実行されると表示されます。"]); return; }
+    await loadDay(D.dates[0], true);
+  } catch (e) {
+    const t = errorText(e);
+    if (e && e.code === "tool_error" && /not found/i.test(String(e.message))) t.splice(0, 2, "まだスクリーニング結果のテーブルがありません。", "GitHub Actions の minervini-screen か daily-update が実行されると作られます。");
+    banner(t, ["not_in_manifest", "approval_required", "consent_required", "tool_error", "incomplete", "server_unavailable", "upstream_error"].includes(e && e.code) ? boot : null);
+  }
+}
+async function loadDay(asof, fromBoot) {
+  banner(["BigQuery から読み込んでいます…", ""]);
+  let rows;
+  try { rows = await bq(`SELECT * EXCEPT(loaded_at), CAST(as_of AS STRING) AS as_of_s, CAST(base_start AS STRING) AS base_start_s,
+      CAST(dry_from AS STRING) AS dry_from_s, CAST(dry_to AS STRING) AS dry_to_s
+    FROM ${T("minervini_screen")} WHERE as_of = DATE '${asof.replace(/[^0-9-]/g, "")}'`); }
+  catch (e) { if (fromBoot) throw e; banner(errorText(e), () => loadDay(asof)); return; }
+  D.as_of = asof;
+  const all = rows.map(toStock);
+  stocks = all.filter(x => x.tt_pass).sort((a, b) => STATUS_RANK(a.status) - STATUS_RANK(b.status) || (b.rs - a.rs));
+  D.near = all.filter(x => !x.tt_pass).sort((a, b) => b.rs - a.rs);
+  byCode = Object.fromEntries(stocks.map(x => [x.code, x]));
+  state.code = null;
+  loadReview();
+  banner(null);
+  $("#main").hidden = false;
+  renderCounts();
+  renderList();
+}
+async function loadPrices(x) {
+  if (!x || x.c || x.loading) return;
+  x.loading = true; x.priceError = null;
+  const code = String(x.code).replace(/[^0-9A-Za-z]/g, ""), asof = D.as_of.replace(/[^0-9-]/g, "");
+  try {
+    // 200日線を250営業日ぶん描くため、約450営業日(700暦日)を読む。価格は配当調整後にそろえる(src/minervini.py と同じ)
+    const rows = await bq(`WITH p AS (
+        SELECT date, adj_close AS c, volume AS v,
+          COALESCE(open * adj_close / NULLIF(close, 0), adj_close) AS o,
+          COALESCE(high * adj_close / NULLIF(close, 0), adj_close) AS hi,
+          COALESCE(low * adj_close / NULLIF(close, 0), adj_close) AS lo
+        FROM ${T("prices")}
+        WHERE code = '${code}' AND date <= DATE '${asof}' AND date >= DATE_SUB(DATE '${asof}', INTERVAL 700 DAY) AND adj_close IS NOT NULL),
+      w AS (
+        SELECT *,
+          IF(COUNT(c) OVER w50 = 50, AVG(c) OVER w50, NULL) AS m50,
+          IF(COUNT(c) OVER w150 = 150, AVG(c) OVER w150, NULL) AS m150,
+          IF(COUNT(c) OVER w200 = 200, AVG(c) OVER w200, NULL) AS m200,
+          IF(COUNT(v) OVER w50 = 50, AVG(v) OVER w50, NULL) AS va
+        FROM p
+        WINDOW w50 AS (ORDER BY date ROWS 49 PRECEDING), w150 AS (ORDER BY date ROWS 149 PRECEDING), w200 AS (ORDER BY date ROWS 199 PRECEDING))
+      SELECT CAST(date AS STRING) AS d, o, hi, lo, c, v, va, m50, m150, m200 FROM w ORDER BY date DESC LIMIT 250`);
+    rows.reverse();
+    const col = k => rows.map(r => r[k]);
+    Object.assign(x, {d: col("d"), o: col("o"), h: col("hi"), l: col("lo"), c: col("c"), v: col("v"), va: col("va"), m50: col("m50"), m150: col("m150"), m200: col("m200")});
+    const at = Object.fromEntries(x.d.map((d, i) => [d, i]));
+    let zz = []; try { zz = JSON.parse(x.zigzag || "[]"); } catch (e) { zz = []; }
+    x.zz = zz.map(([k, d, v]) => [k, at[d] ?? -1, v]);
+    x.start = x.base_start_s && at[x.base_start_s] != null ? at[x.base_start_s] : null;
+    x.dry = x.dry_from_s && x.dry_to_s && at[x.dry_to_s] != null ? [at[x.dry_from_s] ?? 0, at[x.dry_to_s] + 1] : null;
+    if (!rows.length) { delete x.c; x.priceError = "この銘柄の株価がありません。"; }
+  } catch (e) {
+    x.priceError = errorText(e).filter(Boolean).join(" ");
+  } finally {
+    x.loading = false;
+  }
+  if (state.code === x.code && state.tab !== "near") drawChart(x);
+}
+
 /* ---------- コピー ---------- */
 function reviewText() {
   const lines = [`VCPスクリーニング検証 基準日 ${D.as_of}`];
@@ -488,6 +635,5 @@ document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click
 }));
 document.addEventListener("pointermove", e => { if (e.target.closest && e.target.closest("#chart")) hover(e); else if (CH) { CH.cross.setAttribute("visibility", "hidden"); $("#tip").style.display = "none"; } });
 let rz = 0; addEventListener("resize", () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => { if (state.code && state.tab !== "near") drawChart(byCode[state.code]); }); });
-renderCounts();
-renderList();
+boot();
 </script>
