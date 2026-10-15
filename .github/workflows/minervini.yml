@@ -1,7 +1,8 @@
 name: minervini-screen
 
-# ミネルヴィニのスクリーナー(src/minervini.py)を BigQuery の株価で実行し、結果を成果物(artifact)として残す。
-# 手動実行のほか、スクリーナーを変更したブランチへの push でも動く(実データでの検証用)
+# ミネルヴィニのスクリーナー(src/minervini.py)を BigQuery の株価で実行し、結果を BigQuery の minervini_screen に保存する。
+# 毎日の実行は daily-update が行う。こちらは過去の日付での実行(as_of)と、スクリーナーを変更したブランチでの確認用。
+# ブランチへの push でも動き、その時点のコードで当日分を上書きする
 on:
   workflow_dispatch:
     inputs:
@@ -9,11 +10,11 @@ on:
         description: "判定日(YYYY-MM-DD)。空なら最新"
         required: false
   push:
-    branches-ignore: [main, snapshot, "minervini-data/**"]
+    branches-ignore: [main, snapshot]
     paths: [src/minervini.py, .github/workflows/minervini.yml]
 
 permissions:
-  contents: write   # 検証用ページのデータを minervini-data/run-<実行番号> ブランチへ push する
+  contents: read
 
 jobs:
   screen:
@@ -30,32 +31,17 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Screen
+      - name: Screen and save to BigQuery
+        # 結果は BigQuery の minervini_screen に (as_of, code) をキーに保存する(同じ日の再実行は上書き)
         env:
           AS_OF: ${{ inputs.as_of }}
         run: |
           mkdir -p out
           if [ -n "$AS_OF" ]; then
-            python src/minervini.py --bq --as-of "$AS_OF" --equity 5000000 --out "out/minervini_$AS_OF.csv" --charts out/charts.json
+            python src/minervini.py --bq --save --as-of "$AS_OF" --equity 5000000 --out "out/minervini_$AS_OF.csv"
           else
-            python src/minervini.py --bq --equity 5000000 --out out/minervini.csv --charts out/charts.json
+            python src/minervini.py --bq --save --equity 5000000 --out out/minervini.csv
           fi
-
-      - name: Publish chart data
-        # 検証用ページ(artifact/build_minervini.py)が使う JSON。main の履歴に入れないよう、
-        # 実行ごとに新しい孤立ブランチ minervini-data/run-<実行番号> に1コミットだけ push する(上書きはしない)
-        run: |
-          d="$(mktemp -d)"
-          cp out/charts.json "$d/minervini_charts.json"
-          cd "$d"
-          b="minervini-data/run-${{ github.run_id }}"
-          git init -q -b "$b"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add minervini_charts.json
-          git commit -qm "minervini charts: $(date -u +%Y-%m-%d)"
-          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "$b"
-          echo "chart data → $b"
 
       - uses: actions/upload-artifact@v4
         with:

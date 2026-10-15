@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,11 +44,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 ROOT = Path(__file__).resolve().parent.parent
 PRICES = ROOT / "data" / "prices.parquet"
 UNIVERSE = ROOT / "data" / "universe.csv"
 SUMMARY = ROOT / "data" / "summary.csv"
 OUT = ROOT / "data" / "minervini.csv"
+MIN_SAVE_TT = 6            # BigQuery に保存する銘柄: テンプレートをこの条件数以上満たしたもの(惜しい銘柄も確かめられるように)
 BQ_DAYS = 420              # --bq で読む暦日数(52週・200日線・12か月RSに足りる約290営業日)
 
 # --- トレンドテンプレート ---
@@ -304,17 +308,15 @@ def plan_trade(v: Vcp, last: float, atr_v: float, broke_out: bool, equity: float
     return plan
 
 
-def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None,
-           charts: dict | None = None) -> tuple[pd.Timestamp, pd.DataFrame]:
-    """charts に dict を渡すと、テンプレート通過銘柄のチャート用データ(chart_payload)を銘柄コードをキーに入れる。"""
+def screen(prices: pd.DataFrame, uni: pd.DataFrame,
+           equity: float | None = None) -> tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]:
+    """(基準日, テンプレート通過銘柄の判定結果, 全銘柄のテンプレート判定) を返す。"""
     stocks = uni[uni["type"] == "stock"].set_index("code")
     codes = [c for c in stocks.index if c in set(prices["code"])]
     p = load_panels(prices, codes)
     as_of = p["close"].index[-1]
     tt = trend_template(p)
     tt = tt[tt["close"].notna()]
-    if charts is not None:
-        charts["_tt"] = tt          # 全銘柄のテンプレート判定(write_charts で使う。main で取り出す)
 
     rows = []
     for code in tt.index[tt["tt_pass"]]:
@@ -324,10 +326,16 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None,
         a = atr(hi, lo, cl).iloc[-1]
         atr_pct = a / cl.iloc[-1]
         v = detect_vcp(hi, lo, cl, vo, atr_pct)
+        day = lambda i: idx[i].strftime("%Y-%m-%d")   # noqa: E731
         row = {"code": code, "atr_pct": atr_pct * 100, "vcp": v.ok, "vcp_note": v.reason,
                "base_days": v.base_days, "n_contractions": len(v.depths),
                "depths": " → ".join(f"{d * 100:.0f}%" for d in v.depths),
-               "pivot": v.pivot, "dryup": v.dryup}
+               "pivot": v.pivot, "final_low": v.final_low, "dryup": v.dryup,
+               # 検証用ページでチャートに重ねるための位置(日付)
+               "base_start": day(v.start) if v.start >= 0 else None,
+               "zigzag": json.dumps([[k, day(i), round(float(val), 2)] for k, i, val in v.points]) if v.points else None,
+               "dry_from": day(max(v.dry_end - DRYUP_DAYS, 0)) if v.dry_end > 0 else None,
+               "dry_to": day(v.dry_end - 1) if v.dry_end > 0 else None}
         if v.ok:
             status, vr, _ = entry_status(v, cl, vo)
             row.update({"status": status, "breakout_vol": vr,
@@ -336,8 +344,6 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None,
             if not row["risk_ok"] and not status.startswith("伸びすぎ"):
                 row["status"] = "リスク過大(見送り)"
         rows.append(row)
-        if charts is not None:
-            charts[code] = chart_payload(p, code, v, row, a)
 
     out = tt[tt["tt_pass"]].join(pd.DataFrame(rows).set_index("code") if rows else pd.DataFrame())
     out = out.join(stocks[["name", "sector"]])
@@ -352,96 +358,53 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None,
         else order.get(s, 2) if isinstance(s, str) else 3)
     out = out.sort_values(["_o", "rs"], ascending=[True, False]).drop(columns="_o")
     out.index.name = "code"
-    return as_of, out
+    return as_of, out, tt.join(stocks[["name", "sector"]])
 
 
-CHART_DAYS = 250   # チャートに載せる営業日数
+def results_frame(as_of, out: pd.DataFrame, tt_all: pd.DataFrame) -> pd.DataFrame:
+    """BigQuery の minervini_screen に入れる行。テンプレートを MIN_SAVE_TT 条件以上満たした銘柄。
 
-
-def _r(x, nd=2):
-    return None if x is None or not np.isfinite(x) else round(float(x), nd)
-
-
-def chart_payload(p: dict[str, pd.DataFrame], code: str, v: Vcp, row: dict, atr_v: float) -> dict:
-    """検証用チャートのデータ。日付は呼び出し側で共通の配列にそろえる(ここでは日付文字列のまま)。
-
-    価格はすべて配当調整後の水準。
+    テンプレート通過銘柄には VCP の判定とトレード計画が付く(株数は資金額しだいなので入れない)。
     """
-    cl = p["close"][code].dropna()
-    idx = cl.index
-    hi, lo = p["high"][code].reindex(idx).fillna(cl), p["low"][code].reindex(idx).fillna(cl)
-    op = p["open"][code].reindex(idx).fillna(cl)
-    vo = p["volume"][code].reindex(idx)
-    ma = {n: cl.rolling(n).mean() for n in (50, 150, 200)}
-    vavg = vo.rolling(VOL_AVG_DAYS).mean()
-    off = max(len(cl) - CHART_DAYS, 0)
+    import bq_io
 
-    def ser(s, nd=2):
-        return [_r(x, nd) for x in s.iloc[off:]]
-
-    def pos(i):   # 系列全体の添字 → チャート上の添字(表示範囲より前なら負)
-        return int(i) - off
-
-    out = {
-        "d": [d.strftime("%Y-%m-%d") for d in idx[off:]],
-        "o": ser(op), "h": ser(hi), "l": ser(lo), "c": ser(cl), "v": ser(vo, 0), "va": ser(vavg, 0),
-        "m50": ser(ma[50]), "m150": ser(ma[150]), "m200": ser(ma[200]),
-        "start": pos(v.start) if v.start >= 0 else None,
-        "zz": [[k, pos(i), _r(val)] for k, i, val in v.points],
-        "dry": [pos(v.dry_end - DRYUP_DAYS), pos(v.dry_end)] if v.dry_end >= 0 else None,
-        "atr": _r(atr_v),
-    }
-    keep = ["atr_pct", "vcp", "vcp_note", "base_days", "n_contractions", "depths", "pivot", "dryup", "status",
-            "breakout_vol", "to_pivot_pct", "entry", "stop", "stop_basis", "risk_pct", "risk_atr",
-            "target_2r", "target_3r", "breakeven_at", "shares"]
-    for k in keep:
-        val = row.get(k)
-        if isinstance(val, (float, np.floating)):
-            val = _r(val, 3)
-        elif isinstance(val, np.bool_):
-            val = bool(val)
-        elif isinstance(val, np.integer):
-            val = int(val)
-        out[k] = val
-    return out
+    keep = tt_all[tt_all["tt_score"] >= MIN_SAVE_TT].copy()
+    extra = out.drop(columns=[c for c in out.columns if c in keep.columns])
+    df = keep.join(extra).reset_index().rename(columns={"index": "code"})
+    df["as_of"] = pd.Timestamp(as_of).date()
+    df["loaded_at"] = pd.Timestamp.now(tz="UTC")
+    names = [n for n, _ in bq_io.MINERVINI_SCHEMA]
+    for n, t in bq_io.MINERVINI_SCHEMA:
+        if n not in df.columns:
+            df[n] = None
+        if t == "DATE" and n != "as_of":
+            d = pd.to_datetime(df[n], errors="coerce").dt.date
+            df[n] = d.astype(object).where(pd.notna(d), None)
+        elif t == "BOOL":
+            df[n] = df[n].astype(object).where(df[n].notna(), None).map(lambda v: None if v is None else bool(v))
+        elif t == "INT64":
+            df[n] = pd.to_numeric(df[n], errors="coerce").round().astype("Int64")
+        elif t == "FLOAT64":
+            df[n] = pd.to_numeric(df[n], errors="coerce").astype("float64")
+        elif t == "STRING":
+            df[n] = df[n].astype(object).where(df[n].notna(), None)
+    return df[names]
 
 
-def write_charts(path: str, as_of, out: pd.DataFrame, tt_all: pd.DataFrame, charts: dict, uni: pd.DataFrame) -> None:
-    """検証用ページ(artifact/minervini.template.html)に埋め込む JSON を書き出す。"""
-    import json
+def save_results(df: pd.DataFrame) -> None:
+    """(as_of, code) をキーに minervini_screen へ MERGE する。同じ日を再実行すれば上書きされる。
 
-    names = uni.set_index("code")[["name", "sector"]]
-    tt_cols = [f"tt{i}" for i in range(1, 9)]
-    base = ["close", "ma50", "ma150", "ma200", "high52", "low52", "rs", "pct_from_high52", "pct_from_low52"]
+    その日の行はいったん全部入れ直す(前回はテンプレート通過だったが今回は外れた銘柄の行を残さないため)。
+    """
+    import bq_io
+    from google.cloud import bigquery
 
-    def tt_row(code, r):
-        d = {"code": code, "name": names.at[code, "name"] if code in names.index else code,
-             "sector": names.at[code, "sector"] if code in names.index else ""}
-        d.update({k: _r(r[k]) for k in base})
-        d["tt"] = [bool(r[k]) for k in tt_cols]
-        return d
-
-    stocks = []
-    for code, r in out.iterrows():
-        d = tt_row(code, r)
-        d.update(charts.get(code, {}))
-        stocks.append(d)
-    near = tt_all[(tt_all["tt_score"] < 8) & (tt_all["tt_score"] >= 6)].sort_values("rs", ascending=False)
-    doc = {
-        "as_of": as_of.strftime("%Y-%m-%d"),
-        "n_universe": int(len(tt_all)),
-        "params": {k: globals()[k] for k in [
-            "MIN_ABOVE_LOW", "MAX_BELOW_HIGH", "MIN_RS", "BASE_LOOKBACK", "MIN_BASE_DAYS", "ZZ_MIN_PCT", "ZZ_ATR_MULT",
-            "MIN_CONTRACTIONS", "MAX_CONTRACTIONS", "MAX_FIRST_DEPTH", "MAX_FINAL_DEPTH", "CONTRACTION_TOL",
-            "FINAL_VS_FIRST", "DRYUP_DAYS", "MAX_DRYUP_RATIO", "BREAKOUT_VOL_RATIO", "MAX_CHASE",
-            "STOP_ATR_BUFFER", "STOP_ATR_MIN", "MAX_RISK_PCT", "BREAKEVEN_R"]},
-        "tt_counts": [int(tt_all[k].sum()) for k in tt_cols],
-        "stocks": stocks,
-        "near": [tt_row(c, r) for c, r in near.iterrows()],   # 6〜7条件を満たした銘柄(テンプレートの確認用)
-    }
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(doc, f, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    client = bq_io.get_client()
+    bq_io.ensure_tables(client)
+    days = sorted({d.isoformat() for d in df["as_of"]})
+    bq_io._run(client, f"DELETE FROM {bq_io.fqn('minervini_screen')} WHERE as_of IN UNNEST(@days)",
+               [bigquery.ArrayQueryParameter("days", "DATE", days)])
+    bq_io.merge_table(client, df, "minervini_screen", keys=["as_of", "code"], verify=True)
 
 
 def _print(as_of, out: pd.DataFrame, n_universe: int) -> None:
@@ -469,17 +432,17 @@ def main() -> int:
     ap.add_argument("--equity", type=float, help="資金額(円)。指定すると株数を出す")
     ap.add_argument("--bq", action="store_true", help="BigQuery の prices から直接読む")
     ap.add_argument("--out", default=str(OUT))
-    ap.add_argument("--charts", help="検証用ページに埋め込むチャートのデータ(JSON)の書き出し先")
+    ap.add_argument("--save", action="store_true", help="結果を BigQuery の minervini_screen に保存する(要認証)")
     args = ap.parse_args()
 
     uni = pd.read_csv(UNIVERSE, dtype={"code": str})
-    if args.bq:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
+    if args.bq or args.save:
         import bq_io
 
         if not bq_io.credentials_available():
             print("Google Cloud の認証情報がありません(GOOGLE_APPLICATION_CREDENTIALS)")
             return 1
+    if args.bq:
         end = pd.Timestamp(args.as_of) if args.as_of else pd.Timestamp.today().normalize()
         since = (end - pd.Timedelta(days=BQ_DAYS)).date()
         prices = bq_io.read_prices(bq_io.get_client(), since, uni.loc[uni["type"] == "stock", "code"].tolist())
@@ -492,15 +455,14 @@ def main() -> int:
     prices["code"] = prices["code"].astype(str)
     if args.as_of:
         prices = prices[prices["date"] <= pd.Timestamp(args.as_of)]
-    charts = {} if args.charts else None
-    as_of, out = screen(prices, uni, args.equity, charts)
-    out.round(4).to_csv(args.out, encoding="utf-8-sig")
+    as_of, out, tt_all = screen(prices, uni, args.equity)
+    out.drop(columns=["zigzag"], errors="ignore").round(4).to_csv(args.out, encoding="utf-8-sig")
     _print(as_of, out, int((uni["type"] == "stock").sum()))
     print(f"→ {args.out}")
-    if charts is not None:
-        tt_all = charts.pop("_tt")
-        write_charts(args.charts, as_of, out, tt_all, charts, uni)
-        print(f"→ {args.charts}")
+    if args.save:
+        df = results_frame(as_of, out, tt_all)
+        save_results(df)
+        print(f"→ BigQuery minervini_screen ({as_of.date()}, {len(df)}行)")
     return 0
 
 

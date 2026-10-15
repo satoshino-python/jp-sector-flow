@@ -59,6 +59,21 @@ TIMESERIES_SCHEMA = [
     ("loaded_at", "TIMESTAMP"), ("rs_cw", "FLOAT64"),
 ]
 
+MINERVINI_SCHEMA = (
+    [("as_of", "DATE"), ("code", "STRING"), ("name", "STRING"), ("sector", "STRING")]
+    + [(c, "FLOAT64") for c in ["close", "ma50", "ma150", "ma200", "high52", "low52", "rs",
+                               "pct_from_high52", "pct_from_low52"]]
+    + [(f"tt{i}", "BOOL") for i in range(1, 9)]
+    + [("tt_score", "INT64"), ("tt_pass", "BOOL"),
+       ("atr_pct", "FLOAT64"), ("vcp", "BOOL"), ("vcp_note", "STRING"),
+       ("base_start", "DATE"), ("base_days", "INT64"), ("n_contractions", "INT64"), ("depths", "STRING"),
+       ("zigzag", "STRING"), ("dry_from", "DATE"), ("dry_to", "DATE"), ("dryup", "FLOAT64"),
+       ("pivot", "FLOAT64"), ("final_low", "FLOAT64"), ("status", "STRING"), ("breakout_vol", "FLOAT64"),
+       ("to_pivot_pct", "FLOAT64"), ("entry", "FLOAT64"), ("stop", "FLOAT64"), ("stop_basis", "STRING"),
+       ("risk_pct", "FLOAT64"), ("risk_atr", "FLOAT64"), ("target_2r", "FLOAT64"), ("target_3r", "FLOAT64"),
+       ("breakeven_at", "FLOAT64"), ("loaded_at", "TIMESTAMP")]
+)
+
 TABLES = {
     "prices": dict(schema=PRICES_SCHEMA, partition="date", cluster=["code"],
                    desc="株価(日次)。キーは (date, code)"),
@@ -68,6 +83,9 @@ TABLES = {
                            desc="業種ごとの最新指標。キーは (as_of, sector)。日ごとに積み上げ"),
     "sector_timeseries": dict(schema=TIMESERIES_SCHEMA, partition=None, cluster=["sector"],
                               desc="直近120営業日の相対強度・シェアの推移(毎回全置換。相対強度は期首=100に再基準化)"),
+    "minervini_screen": dict(schema=MINERVINI_SCHEMA, partition="as_of", cluster=["code"],
+                             desc="ミネルヴィニのスクリーニング結果(src/minervini.py)。キーは (as_of, code)。"
+                                  "テンプレートを6条件以上満たした銘柄。zigzag は [種類, 日付, 価格] のJSON"),
 }
 
 
