@@ -1,0 +1,640 @@
+<title>VCPスクリーニング検証</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 構成: 見出しと件数 → 左に銘柄リスト(VCP判定 / 不合格の理由で絞り込み)、右に選んだ銘柄のチャートと判定の内訳。
+   色は業種ダッシュボード(snapshot.template.html)と同じ系統。日本の慣習に合わせ、赤が陽線、青が陰線。 */
+:root{
+  --bg:#f9f9f7; --surface:#fcfcfb; --fg:#0b0b0b; --fg2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --line:rgba(11,11,11,.10); --wash:rgba(42,120,214,.08); --base:rgba(42,120,214,.07);
+  --pos:#e66767; --neg:#6da7ec;
+  --ma50:#1baf7a; --ma150:#eda100; --ma200:#4a3aa7; --pivot:#eb6834; --stop:#0b0b0b; --target:#008300; --zz:#52514e;
+  --ok:#008300; --ng:#c42b2b; --warn:#b45309; --focus:#2a78d6;
+  --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",Meiryo,system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0d0d0d; --surface:#1a1a19; --fg:#ffffff; --fg2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --line:rgba(255,255,255,.10); --wash:rgba(57,135,229,.14); --base:rgba(57,135,229,.10);
+    --pos:#d45454; --neg:#3d84dc;
+    --ma50:#199e70; --ma150:#c98500; --ma200:#9085e9; --pivot:#e8743f; --stop:#ffffff; --target:#3fb950; --zz:#c3c2b7;
+    --ok:#3fb950; --ng:#ff6b6b; --warn:#fab219; --focus:#3987e5; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0d0d0d; --surface:#1a1a19; --fg:#ffffff; --fg2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --line:rgba(255,255,255,.10); --wash:rgba(57,135,229,.14); --base:rgba(57,135,229,.10);
+  --pos:#d45454; --neg:#3d84dc;
+  --ma50:#199e70; --ma150:#c98500; --ma200:#9085e9; --pivot:#e8743f; --stop:#ffffff; --target:#3fb950; --zz:#c3c2b7;
+  --ok:#3fb950; --ng:#ff6b6b; --warn:#fab219; --focus:#3987e5; color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font:14px/1.6 var(--sans);
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:20px 48px}
+.wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+h1{font-size:22px;line-height:1.3;margin:0;font-weight:700}
+h2{font-size:15px;margin:0;font-weight:700;text-wrap:balance}
+h3{font-size:13px;margin:0;font-weight:700;color:var(--fg2);letter-spacing:.04em}
+.note{color:var(--fg2);font-size:12px;margin:0}
+.muted{color:var(--muted)}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+.num{font-variant-numeric:tabular-nums}
+
+header{display:flex;flex-wrap:wrap;gap:10px 28px;align-items:flex-end;justify-content:space-between}
+.counts{display:flex;flex-wrap:wrap;gap:4px 22px;font-size:13px;color:var(--fg2)}
+.counts b{font-size:20px;color:var(--fg);font-variant-numeric:tabular-nums;margin-right:2px}
+
+.layout{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);gap:18px;align-items:start}
+@media (max-width:900px){.layout{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:12px;min-width:0}
+
+.seg{display:inline-flex;border:1px solid var(--axis);border-radius:6px;overflow:hidden;flex-wrap:wrap}
+.seg button{background:transparent;border:0;padding:4px 11px;font-size:12px;cursor:pointer}
+.seg button+button{border-left:1px solid var(--axis)}
+.seg button[aria-pressed="true"]{background:var(--wash);font-weight:700}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--axis);background:transparent;border-radius:14px;padding:1px 9px;font-size:11px;cursor:pointer}
+.chip[aria-pressed="true"]{border-color:var(--fg2);background:var(--wash);font-weight:700}
+
+.list{max-height:70vh;overflow:auto;border-top:1px solid var(--grid)}
+@media (max-width:900px){.list{max-height:42vh}}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:12px}
+th,td{padding:6px 6px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;border-bottom:1px solid var(--grid)}
+th{font-weight:600;color:var(--fg2);font-size:11px;position:sticky;top:0;background:var(--surface);z-index:1}
+th:first-child,td:first-child{text-align:left}
+td.wrap{white-space:normal}
+tbody tr{cursor:pointer}
+tbody tr:hover td{background:var(--wash)}
+tr.sel td{background:var(--wash);box-shadow:inset 0 -2px 0 var(--focus)}
+.nm{display:flex;flex-direction:column;gap:2px;line-height:1.3;min-width:9em}
+td.wrap .pill.no{font-size:11px}
+.nm small{color:var(--muted);font-size:11px}
+.pill{display:inline-block;border-radius:10px;padding:0 7px;font-size:11px;line-height:18px;white-space:nowrap}
+.pill.go{background:color-mix(in srgb,var(--pos) 22%,transparent);color:var(--fg)}
+.pill.wait{background:color-mix(in srgb,var(--ma150) 24%,transparent);color:var(--fg)}
+.pill.skip{background:color-mix(in srgb,var(--muted) 22%,transparent);color:var(--fg2)}
+.pill.no{color:var(--fg2);padding:0;white-space:normal}
+.mark{font-size:11px;font-weight:700}
+.mark.ok{color:var(--ok)} .mark.ng{color:var(--ng)} .mark.q{color:var(--warn)}
+
+.detail-head{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;justify-content:space-between}
+.detail-title{font-size:18px;font-weight:700}
+.detail-title small{font-size:13px;color:var(--muted);font-weight:400;margin-left:6px}
+.tools{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.key{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11px;color:var(--fg2)}
+.key span{display:inline-flex;align-items:center;gap:5px}
+.key i{display:inline-block;width:16px;height:0;border-top:2px solid}
+.key i.box{width:10px;height:10px;border:0;border-radius:2px}
+.chart{position:relative;min-width:0;touch-action:pan-y;cursor:crosshair}
+svg text{font-family:var(--sans);fill:var(--fg2)}
+.ax{font-size:11px}
+.lbl{font-size:11px;font-weight:700}
+
+.cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:1100px){.cols{grid-template-columns:1fr 1fr}}
+@media (max-width:640px){.cols{grid-template-columns:1fr}}
+.card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px;font-size:12px}
+.checks li{display:grid;grid-template-columns:16px 1fr auto;gap:6px;align-items:baseline}
+.checks .r{font-variant-numeric:tabular-nums;color:var(--fg2);text-align:right}
+.yes{color:var(--ok);font-weight:700} .no{color:var(--ng);font-weight:700}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px;margin:0}
+.kv dt{color:var(--fg2)} .kv dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+
+.review{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.review .seg button{padding:4px 14px}
+.review input{flex:1;min-width:12em;font:inherit;font-size:12px;padding:5px 8px;border:1px solid var(--axis);border-radius:6px;background:var(--bg);color:var(--fg)}
+.btn{background:transparent;border:1px solid var(--axis);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
+.btn:hover{background:var(--wash)}
+.foot{display:flex;flex-direction:column;gap:6px}
+.state{padding:28px 6px;color:var(--fg2);font-size:13px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.state strong{color:var(--fg)}
+#asof{font:inherit;font-size:13px;padding:2px 6px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--fg)}
+.banner{border:1px solid var(--axis);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;background:var(--surface)}
+.banner p{margin:0;max-width:75ch}
+.foot p{margin:0;max-width:80ch}
+#tip{position:fixed;z-index:20;pointer-events:none;background:var(--surface);color:var(--fg);border:1px solid var(--axis);
+  border-radius:6px;padding:7px 10px;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,.18);display:none;min-width:150px}
+#tip .tl{font-weight:700;margin-bottom:3px}
+#tip .tr{display:flex;gap:12px;justify-content:space-between;white-space:nowrap}
+#tip .tr span:first-child{color:var(--fg2)}
+#tip .tr span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>VCPスクリーニング検証</h1>
+      <p class="note" id="sub">トレンドテンプレートを通過した銘柄のチャートに、プログラムが検出したベース・収縮・ピボット・損切りを重ねて表示します。</p>
+    </div>
+    <div class="counts" id="counts"></div>
+  </header>
+
+  <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
+
+  <div class="layout" id="main" hidden>
+    <section class="panel" aria-label="銘柄リスト">
+      <div class="seg" id="tabs" role="group" aria-label="表示する銘柄">
+        <button type="button" data-t="vcp" aria-pressed="true">VCP判定</button>
+        <button type="button" data-t="rej" aria-pressed="false">VCP不合格</button>
+        <button type="button" data-t="near" aria-pressed="false">テンプレート惜しい</button>
+      </div>
+      <div class="chips" id="reasons" hidden></div>
+      <p class="note" id="list-note"></p>
+      <div class="list"><table id="list"></table></div>
+    </section>
+
+    <section class="panel" id="detail" aria-label="選んだ銘柄"></section>
+  </div>
+
+  <section class="panel foot">
+    <h2>目視チェックの結果</h2>
+    <p class="note">各銘柄の「判定は妥当？」で付けた印とメモは、このブラウザにだけ保存されます。まとめてコピーして、チャットに貼り付けてください。</p>
+    <div class="tools"><button class="btn" type="button" id="copy">印とメモをコピー</button><span class="note" id="copy-msg" role="status"></span></div>
+    <pre id="copy-src" class="note" hidden></pre>
+  </section>
+
+  <section class="foot note">
+    <p>価格は株式分割・配当を反映した調整後の値で、取引所の表示価格とは異なります。業績(EPS・売上)は判定に入っていません。</p>
+    <p>投資判断の材料の一つであり、売買の推奨ではありません。</p>
+  </section>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script>
+"use strict";
+/* データは BigQuery から、閲覧している人の Google Cloud BigQuery コネクタで読む(ページには埋め込まない)。
+   minervini_screen ... src/minervini.py --save が書く判定結果(基準日 × 銘柄)
+   prices           ... 株価(チャート用。選んだ銘柄だけ読む) */
+const BQ = "Google Cloud BigQuery", PROJECT = "jp-sector-flow", DATASET = "sector_flow";
+// しきい値は src/minervini.py 冒頭の定数と同じ値(表示用)。向こうを変えたらここも合わせる
+const P = {MIN_ABOVE_LOW: 0.30, MAX_BELOW_HIGH: 0.25, MIN_RS: 70, MIN_BASE_DAYS: 15, ZZ_MIN_PCT: 0.05, ZZ_ATR_MULT: 2.5,
+  MIN_CONTRACTIONS: 2, MAX_CONTRACTIONS: 6, MAX_FIRST_DEPTH: 0.35, MAX_FINAL_DEPTH: 0.10, FINAL_VS_FIRST: 0.5,
+  DRYUP_DAYS: 10, MAX_DRYUP_RATIO: 0.85};
+const D = {as_of: null, dates: [], near: []};
+const $ = q => document.querySelector(q);
+const NS = "http://www.w3.org/2000/svg";
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v); else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat(Infinity)) if (k != null && k !== false) el.append(k.nodeType ? k : String(k));
+  return el;
+}
+function s(tag, attrs, ...kids) {
+  const el = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) el.setAttribute(k, v);
+  for (const k of kids) if (k != null) el.append(k.nodeType ? k : String(k));
+  return el;
+}
+const fx = (v, d = 1) => v == null || !isFinite(v) ? "-" : Number(v).toLocaleString("ja-JP", {minimumFractionDigits: d, maximumFractionDigits: d});
+const fp = v => v == null ? "-" : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("ja-JP") : fx(v, 1);
+const pct = (v, d = 0) => v == null ? "-" : fx(v * 100, d) + "%";
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+
+/* ---------- 目視チェック(このブラウザだけに保存) ---------- */
+let review = {};
+const rkey = () => "minervini-review-" + D.as_of;
+function loadReview() { try { review = JSON.parse(localStorage.getItem(rkey()) || "{}") || {}; } catch (e) { review = {}; } }
+function saveReview() { try { localStorage.setItem(rkey(), JSON.stringify(review)); } catch (e) { /* 保存できなくても表示は続ける */ } }
+
+/* ---------- 状態 ---------- */
+let stocks = [], byCode = {};
+const reasonKey = r => /^収縮\d+回$/.test(r) ? "収縮回数が範囲外" : r;
+const state = {tab: "vcp", reason: null, code: null, bars: innerWidth < 560 ? 63 : 130};
+try { const t = localStorage.getItem("minervini-tab"); if (t) state.tab = t; } catch (e) { /* 無視 */ }
+
+function statusClass(st) {
+  if (!st) return "no";
+  if (st.startsWith("ブレイク") && !st.includes("不足")) return "go";
+  if (st.startsWith("ピボット") || st.includes("不足")) return "wait";
+  return "skip";
+}
+const TT_LABELS = [
+  ["株価 > 150日線・200日線", x => `${fp(x.close)} / ${fp(x.ma150)} / ${fp(x.ma200)}`],
+  ["150日線 > 200日線", x => `${fp(x.ma150)} / ${fp(x.ma200)}`],
+  ["200日線が1か月前より上", () => ""],
+  ["50日線 > 150日線・200日線", x => `${fp(x.ma50)}`],
+  ["株価 > 50日線", x => `${fp(x.close)} / ${fp(x.ma50)}`],
+  [`52週安値から +${P.MIN_ABOVE_LOW * 100}%以上`, x => `+${fx(x.pct_from_low52, 0)}%`],
+  [`52週高値から −${P.MAX_BELOW_HIGH * 100}%以内`, x => `${fx(x.pct_from_high52, 1)}%`],
+  [`RS ${P.MIN_RS}以上`, x => fx(x.rs, 0)],
+];
+const lastOf = v => Array.isArray(v) ? v[v.length - 1] : v;
+
+/* ---------- 件数 ---------- */
+function renderCounts() {
+  const nv = stocks.filter(x => x.vcp).length;
+  $("#counts").replaceChildren(
+    h("label", {for: "asof"}, "基準日 ", h("select", {id: "asof", onchange: e => loadDay(e.target.value)},
+      D.dates.map(d => h("option", {value: d, selected: d === D.as_of}, d)))),
+    h("span", null, h("b", null, stocks.length), "テンプレート通過"),
+    h("span", null, h("b", null, nv), "VCP判定"),
+    h("span", null, h("b", null, stocks.length - nv), "VCP不合格"));
+}
+
+/* ---------- リスト ---------- */
+function rows() {
+  if (state.tab === "vcp") return stocks.filter(x => x.vcp);
+  if (state.tab === "rej") return stocks.filter(x => !x.vcp && (!state.reason || x.reasons.some(r => reasonKey(r) === state.reason)));
+  return D.near;
+}
+function renderTabs() {
+  document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-pressed", b.dataset.t === state.tab ? "true" : "false"));
+  const box = $("#reasons");
+  box.hidden = state.tab !== "rej";
+  if (state.tab === "rej") {
+    const cnt = {};
+    stocks.filter(x => !x.vcp).forEach(x => new Set(x.reasons.map(reasonKey)).forEach(r => cnt[r] = (cnt[r] || 0) + 1));
+    const keys = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]);
+    box.replaceChildren(h("button", {class: "chip", type: "button", "aria-pressed": state.reason ? "false" : "true", onclick: () => { state.reason = null; renderList(); }}, "すべて"),
+      ...keys.map(k => h("button", {class: "chip", type: "button", "aria-pressed": state.reason === k ? "true" : "false",
+        onclick: () => { state.reason = state.reason === k ? null : k; renderList(); }}, `${k} ${cnt[k]}`)));
+  }
+  $("#list-note").textContent = {
+    vcp: "VCPと判定された銘柄。状態はピボットに対する現在位置です。",
+    rej: "テンプレートは通過したがVCPにならなかった銘柄。理由で絞り込めます(1銘柄に複数の理由があります)。",
+    near: "テンプレート8条件のうち6〜7条件を満たした銘柄。チャートはありません。満たさなかった条件を確かめられます。",
+  }[state.tab];
+}
+function markEl(code) {
+  const r = review[code]; if (!r || !r.mark) return "";
+  return h("span", {class: "mark " + {ok: "ok", ng: "ng", q: "q"}[r.mark], title: "目視チェック"}, {ok: "妥当", ng: "要修正", q: "保留"}[r.mark]);
+}
+function renderList() {
+  renderTabs();
+  const list = rows(), tb = $("#list");
+  if (state.tab === "near") {
+    tb.replaceChildren(h("thead", null, h("tr", null, h("th", null, "銘柄"), h("th", null, "RS"), h("th", null, "満たさなかった条件"))),
+      h("tbody", null, list.map(x => h("tr", {onclick: () => select(x.code, true)}, h("td", null, h("div", {class: "nm"}, x.name, h("small", null, x.code + " " + x.sector))),
+        h("td", null, fx(x.rs, 0)), h("td", {class: "wrap", style: "text-align:left"}, x.tt.map((ok, i) => ok ? null : TT_LABELS[i][0]).filter(Boolean).join("、"))))));
+    if (!list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 3}, "該当する銘柄はありません。"))));
+    renderNearDetail();
+    return;
+  }
+  tb.replaceChildren(
+    h("thead", null, h("tr", null, h("th", null, "銘柄 / " + (state.tab === "vcp" ? "状態" : "理由")), h("th", null, "RS"), h("th", null, "収縮の深さ"))),
+    h("tbody", null, list.map(x => h("tr", {class: x.code === state.code ? "sel" : null, "data-code": x.code, onclick: () => select(x.code)},
+      h("td", {class: "wrap"}, h("div", {class: "nm"}, h("span", null, x.name, " ", markEl(x.code)), h("small", null, x.code + " " + x.sector),
+        h("span", null, x.vcp ? h("span", {class: "pill " + statusClass(x.status)}, x.status) : h("span", {class: "pill no"}, x.reasons.join("、"))))),
+      h("td", null, fx(x.rs, 0)),
+      h("td", {class: "wrap"}, (x.depths || "-").replaceAll(" → ", "→"))))));
+  if (!list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 3}, "該当する銘柄はありません。"))));
+  if (!list.some(x => x.code === state.code)) { if (list.length) select(list[0].code); else $("#detail").replaceChildren(h("p", {class: "note"}, "左のリストに銘柄がありません。")); }
+}
+function renderNearDetail() {
+  const cnt = TT_LABELS.map((_, i) => D.near.filter(x => !x.tt[i]).length);
+  $("#detail").replaceChildren(h("h2", null, "惜しい銘柄が満たさなかった条件"),
+    h("p", {class: "note"}, `6〜7条件を満たした ${D.near.length} 銘柄のうち、各条件を満たさなかった銘柄数。`),
+    h("ul", {class: "checks"}, TT_LABELS.map(([lab], i) => h("li", null, h("span", null, ""), h("span", null, lab), h("span", {class: "r"}, `${cnt[i]} 銘柄`)))));
+}
+
+/* ---------- 詳細 ---------- */
+function select(code, fromNear) {
+  if (fromNear) return;
+  state.code = code;
+  document.querySelectorAll("#list tbody tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.code === code));
+  renderDetail();
+  loadPrices(byCode[code]);
+}
+function vcpChecks(x) {
+  const d = (x.depths || "").split(" → ").map(t => parseFloat(t) / 100).filter(v => isFinite(v));
+  const items = [];
+  items.push([`ベースの期間 ${P.MIN_BASE_DAYS}日以上`, x.base_days >= P.MIN_BASE_DAYS, `${x.base_days}日`]);
+  if (x.reasons.includes("ベースが短い")) return items;
+  items.push([`収縮 ${P.MIN_CONTRACTIONS}〜${P.MAX_CONTRACTIONS}回`, d.length >= P.MIN_CONTRACTIONS && d.length <= P.MAX_CONTRACTIONS, `${d.length}回`]);
+  if (!d.length) return items;
+  items.push([`最初の収縮 ${P.MAX_FIRST_DEPTH * 100}%以内`, d[0] <= P.MAX_FIRST_DEPTH + 0.005, pct(d[0])]);
+  items.push([`最後の収縮 ${P.MAX_FINAL_DEPTH * 100}%以内`, !x.reasons.includes("最後の収縮が深い"), pct(d[d.length - 1])]);
+  if (d.length >= 3) items.push(["途中の収縮が最初より深くない", !x.reasons.includes("途中の収縮が最初より深い"), d.length > 2 ? pct(Math.max(...d.slice(1, -1))) : "-"]);
+  items.push(["最後の収縮が最も浅い", !x.reasons.includes("最後の収縮が最も浅くない") && !x.reasons.includes("収縮が浅くなっていない"), x.depths]);
+  items.push([`最後 ≤ 最初の${P.FINAL_VS_FIRST * 100}%`, !x.reasons.includes("収縮の縮み不足"), d.length > 1 ? `${fx(d[d.length - 1] / d[0] * 100, 0)}%` : "-"]);
+  items.push([`直近${P.DRYUP_DAYS}日の出来高 ≤ 50日平均の${P.MAX_DRYUP_RATIO * 100}%`, !x.reasons.includes("出来高が細っていない"), x.dryup == null ? "-" : `${fx(x.dryup * 100, 0)}%`]);
+  return items;
+}
+function checkList(items) {
+  return h("ul", {class: "checks"}, items.map(([lab, ok, val]) => h("li", null, h("span", {class: ok ? "yes" : "no", "aria-label": ok ? "満たす" : "満たさない"}, ok ? "✓" : "✗"), h("span", null, lab), h("span", {class: "r"}, val))));
+}
+function renderDetail() {
+  const x = byCode[state.code], box = $("#detail");
+  if (!x) return;
+  const ranges = [["3か月", 63], ["6か月", 130], ["1年", 250]];
+  const r = review[x.code] || {};
+  box.replaceChildren(
+    h("div", {class: "detail-head"},
+      h("div", {class: "detail-title"}, x.name, h("small", null, `${x.code}　${x.sector}`)),
+      x.vcp ? h("span", {class: "pill " + statusClass(x.status)}, x.status) : h("span", {class: "pill skip"}, "VCP不合格")),
+    h("div", {class: "tools"},
+      h("div", {class: "seg", role: "group", "aria-label": "表示期間"}, ranges.map(([lab, n]) => h("button", {type: "button", "aria-pressed": state.bars === n ? "true" : "false",
+        onclick: () => { state.bars = n; renderDetail(); }}, lab))),
+      h("div", {class: "key"},
+        h("span", null, h("i", {style: "border-color:var(--ma50)"}), "50日線"), h("span", null, h("i", {style: "border-color:var(--ma150)"}), "150日線"),
+        h("span", null, h("i", {style: "border-color:var(--ma200)"}), "200日線"), h("span", null, h("i", {class: "box", style: "background:var(--base)"}), "ベース"),
+        h("span", null, h("i", {style: "border-color:var(--zz);border-top-style:dashed"}), "検出した収縮"), h("span", null, h("i", {style: "border-color:var(--pivot)"}), "ピボット"),
+        x.vcp ? h("span", null, h("i", {style: "border-color:var(--stop);border-top-style:dashed"}), "損切り") : null,
+        x.vcp ? h("span", null, h("i", {style: "border-color:var(--target);border-top-style:dotted"}), "2R") : null)),
+    h("div", {class: "chart", id: "chart"}),
+    h("div", {class: "cols"},
+      h("div", {class: "card"}, h("h3", null, "トレンドテンプレート"), checkList(TT_LABELS.map(([lab, f], i) => [lab, x.tt[i], f({...x, ma50: lastOf(x.m50) ?? x.ma50})])),
+        h("p", {class: "note"}, `ATR ${fx(x.atr_pct, 1)}%(20日)`)),
+      h("div", {class: "card"}, h("h3", null, "VCPの判定"), checkList(vcpChecks(x)),
+        h("p", {class: "note"}, `収縮は高値から ${fx(Math.max(P.ZZ_MIN_PCT, P.ZZ_ATR_MULT * x.atr_pct / 100) * 100, 1)}% 以上反転したところで区切っています(${P.ZZ_MIN_PCT * 100}%か ATRの${P.ZZ_ATR_MULT}倍の大きい方)。`)),
+      h("div", {class: "card"}, h("h3", null, "トレード計画"),
+        x.vcp ? h("dl", {class: "kv"},
+          h("dt", null, "ピボット"), h("dd", null, fp(x.pivot)),
+          h("dt", null, "エントリー"), h("dd", null, fp(x.entry)),
+          h("dt", null, "損切り"), h("dd", null, `${fp(x.stop)}(−${fx(x.risk_pct, 1)}%)`),
+          h("dt", null, "損切りの根拠"), h("dd", null, `${x.stop_basis}・${fx(x.risk_atr, 1)}ATR`),
+          h("dt", null, "目標 2R / 3R"), h("dd", null, `${fp(x.target_2r)} / ${fp(x.target_3r)}`),
+          h("dt", null, "建値へ移す目安"), h("dd", null, fp(x.breakeven_at)),
+          h("dt", null, "ブレイク日の出来高"), h("dd", null, x.breakout_vol == null ? "-" : `50日平均の${fx(x.breakout_vol, 1)}倍`),
+          h("dt", null, "株数(資金500万円)"), h("dd", null, x.shares == null ? "-" : `${x.shares}株`))
+          : h("p", {class: "note"}, "VCPと判定されなかったため、トレード計画は出していません。チャートのピボット線は、検出した最後の収縮の起点です。"))),
+    h("div", {class: "review"},
+      h("span", {class: "note"}, "判定は妥当？"),
+      h("div", {class: "seg", role: "group", "aria-label": "目視チェック"}, [["ok", "妥当"], ["ng", "要修正"], ["q", "保留"]].map(([k, lab]) =>
+        h("button", {type: "button", "aria-pressed": r.mark === k ? "true" : "false", onclick: () => setMark(x.code, k)}, lab))),
+      h("input", {id: "memo", type: "text", placeholder: "メモ(例: 2回目の収縮を見落としている)", value: r.memo || "", "aria-label": "メモ",
+        oninput: e => { review[x.code] = {...(review[x.code] || {}), memo: e.target.value}; saveReview(); }})));
+  drawChart(x);
+}
+function setMark(code, k) {
+  const cur = review[code] || {};
+  review[code] = {...cur, mark: cur.mark === k ? null : k};
+  saveReview(); renderList(); renderDetail();
+}
+
+/* ---------- チャート ---------- */
+let CH = null;
+function drawChart(x) {
+  const wrap = $("#chart"); if (!wrap) return;
+  if (!x.c) { wrap.replaceChildren(h("div", {class: "state"}, x.priceError || "チャートを読み込んでいます…")); CH = null; return; }
+  const len = x.c.length, n = Math.min(state.bars, len), i0 = len - n;
+  const W = Math.max(300, wrap.clientWidth || 700), narrow = W < 560;
+  const mg = {l: 8, r: narrow ? 52 : 64, t: 12, b: 24}, H1 = narrow ? 240 : 330, H2 = 70, gap = 10;
+  const pTop = mg.t, pBot = pTop + H1, vTop = pBot + gap, vBot = vTop + H2, H = vBot + mg.b;
+  const plotW = W - mg.l - mg.r, sw = plotW / n, X = j => mg.l + (j - i0 + 0.5) * sw;
+  const vals = [];
+  for (let i = i0; i < len; i++) { if (x.h[i] != null) vals.push(x.h[i]); if (x.l[i] != null) vals.push(x.l[i]); }
+  if (x.vcp) vals.push(x.stop, x.target_2r);
+  if (x.pivot != null) vals.push(x.pivot);
+  for (const m of [x.m50, x.m150, x.m200]) for (let i = i0; i < len; i++) if (m[i] != null) vals.push(m[i]);
+  let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.05 || 1; lo -= pad; hi += pad;
+  const ly = Math.log, Y = v => pBot - (ly(v) - ly(lo)) / (ly(hi) - ly(lo)) * (pBot - pTop);   // 対数目盛(収縮の深さを見比べやすくする)
+  const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${x.name}のローソク足、移動平均、検出した収縮とピボット`});
+  // 目盛
+  const ticks = niceTicks(lo, hi, narrow ? 4 : 6);
+  ticks.forEach(t => svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: Y(t), y2: Y(t), stroke: "var(--grid)"}),
+    s("text", {class: "ax", x: W - mg.r + 6, y: Y(t) + 4}, fp(t))));
+  // ベース
+  if (x.start != null) {
+    const a = Math.max(x.start, i0);
+    if (a < len) svg.append(s("rect", {x: X(a) - sw / 2, y: pTop, width: X(len - 1) - X(a) + sw, height: pBot - pTop, fill: "var(--base)"}));
+    if (x.start >= i0) svg.append(s("text", {class: "ax", x: X(x.start) + 3, y: pBot - 6}, `ベース ${x.base_days}日`));
+  }
+  // 移動平均
+  [["m200", "--ma200"], ["m150", "--ma150"], ["m50", "--ma50"]].forEach(([k, c]) => {
+    let d = "", on = false;
+    for (let i = i0; i < len; i++) { const v = x[k][i]; if (v == null) { on = false; continue; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1); on = true; }
+    svg.append(s("path", {d, fill: "none", stroke: `var(${c})`, "stroke-width": 1.5, opacity: .9}));
+  });
+  // ローソク足
+  const bw = Math.max(1, Math.min(9, sw * 0.65));
+  for (let i = i0; i < len; i++) {
+    const o = x.o[i] ?? x.c[i - 1] ?? x.c[i], c = x.c[i]; if (c == null) continue;
+    const col = c >= o ? "var(--pos)" : "var(--neg)";
+    svg.append(s("line", {x1: X(i), x2: X(i), y1: Y(x.h[i] ?? c), y2: Y(x.l[i] ?? c), stroke: col}),
+      s("rect", {x: X(i) - bw / 2, y: Math.min(Y(o), Y(c)), width: bw, height: Math.max(1, Math.abs(Y(o) - Y(c))), fill: col}));
+  }
+  // 検出した収縮(ZigZag)
+  const zz = (x.zz || []).filter(p => p[1] >= i0);
+  if (zz.length > 1) {
+    svg.append(s("path", {d: zz.map((p, k) => (k ? "L" : "M") + X(p[1]).toFixed(1) + " " + Y(p[2]).toFixed(1)).join(""), fill: "none", stroke: "var(--zz)", "stroke-width": 1.5, "stroke-dasharray": "5 3"}));
+    const all = x.zz || [];
+    all.forEach((p, k) => {
+      if (p[1] < i0) return;
+      const last = k === all.length - 1;
+      svg.append(s("circle", {cx: X(p[1]), cy: Y(p[2]), r: 3.2, fill: last ? "var(--surface)" : "var(--zz)", stroke: "var(--zz)", "stroke-width": 1.5}));
+      if (p[0] === "L" && k > 0 && all[k - 1][0] === "H") {
+        const dep = 1 - p[2] / all[k - 1][2];
+        svg.append(s("text", {class: "lbl", x: X(p[1]), y: Y(p[2]) + 15, "text-anchor": "middle", style: "fill:var(--fg)"}, "−" + fx(dep * 100, 0) + "%"));
+      }
+    });
+  }
+  // ピボット・損切り・目標
+  const hline = (v, col, dash, label) => {
+    if (v == null) return;
+    svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: Y(v), y2: Y(v), stroke: `var(${col})`, "stroke-width": 1.5, "stroke-dasharray": dash}));
+    const t = `${label} ${fp(v)}`, tw = t.length * 7 + 8, ty = Y(v);
+    svg.append(s("rect", {x: mg.l + 2, y: ty - 8, width: tw, height: 16, rx: 3, fill: "var(--surface)", stroke: `var(${col})`, "stroke-width": 1}),
+      s("text", {class: "lbl", x: mg.l + 6, y: ty + 4, style: `fill:var(${col})`}, t));
+  };
+  hline(x.pivot, "--pivot", null, "ピボット");
+  if (x.vcp) { hline(x.stop, "--stop", "6 4", "損切り"); hline(x.target_2r, "--target", "2 3", "2R"); }
+  // 出来高
+  const vmax = Math.max(1, ...x.v.slice(i0).map(v => v || 0), ...x.va.slice(i0).map(v => v || 0));
+  const Yv = v => vBot - v / vmax * H2;
+  if (x.dry) {
+    const a = Math.max(x.dry[0], i0), b = x.dry[1] - 1;
+    if (b >= i0) svg.append(s("rect", {x: X(a) - sw / 2, y: vTop, width: X(b) - X(a) + sw, height: H2, fill: "var(--base)"}),
+      s("text", {class: "ax", x: X(b) + sw / 2 - 2, y: vTop + 10, "text-anchor": "end"}, "細りを見た期間"));
+  }
+  for (let i = i0; i < len; i++) {
+    const v = x.v[i]; if (!v) continue;
+    const up = x.c[i] >= (x.o[i] ?? x.c[i - 1] ?? x.c[i]);
+    svg.append(s("rect", {x: X(i) - bw / 2, y: Yv(v), width: bw, height: vBot - Yv(v), fill: up ? "var(--pos)" : "var(--neg)", opacity: .6}));
+  }
+  let d = "", on = false;
+  for (let i = i0; i < len; i++) { const v = x.va[i]; if (v == null) { on = false; continue; } d += (on ? "L" : "M") + X(i).toFixed(1) + " " + Yv(v).toFixed(1); on = true; }
+  svg.append(s("path", {d, fill: "none", stroke: "var(--fg2)", "stroke-width": 1.2}));
+  svg.append(s("line", {x1: mg.l, x2: W - mg.r, y1: vBot, y2: vBot, stroke: "var(--axis)"}),
+    s("text", {class: "ax", x: mg.l + 2, y: vTop + 10}, "出来高(線は50日平均)"));
+  // 日付
+  const nx = narrow ? 4 : 7;
+  for (let k = 0; k < nx; k++) { const i = i0 + Math.round(k * (n - 1) / (nx - 1));
+    svg.append(s("text", {class: "ax", x: X(i), y: H - 6, "text-anchor": k === 0 ? "start" : k === nx - 1 ? "end" : "middle"}, x.d[i].slice(2).replaceAll("-", "/"))); }
+  const cross = s("line", {y1: pTop, y2: vBot, stroke: "var(--fg2)", visibility: "hidden"});
+  svg.append(cross);
+  wrap.replaceChildren(svg);
+  CH = {x, i0, n, sw, ml: mg.l, cross, X};
+}
+function niceTicks(lo, hi, n) {
+  const span = hi - lo, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(st => span / st <= n) || 10 * mag;
+  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) out.push(v);
+  return out;
+}
+function hover(e) {
+  if (!CH) return;
+  const rect = $("#chart").getBoundingClientRect(), j = Math.floor((e.clientX - rect.left - CH.ml) / CH.sw);
+  const tip = $("#tip");
+  if (j < 0 || j >= CH.n) { CH.cross.setAttribute("visibility", "hidden"); tip.style.display = "none"; return; }
+  const i = CH.i0 + j, x = CH.x, px = CH.X(i);
+  CH.cross.setAttribute("x1", px); CH.cross.setAttribute("x2", px); CH.cross.setAttribute("visibility", "visible");
+  const row = (a, b) => h("div", {class: "tr"}, h("span", null, a), h("span", null, b));
+  tip.replaceChildren(h("div", {class: "tl"}, x.d[i]), row("始値", fp(x.o[i])), row("高値", fp(x.h[i])), row("安値", fp(x.l[i])), row("終値", fp(x.c[i])),
+    row("出来高/50日平均", x.va[i] ? fx(x.v[i] / x.va[i], 2) + "倍" : "-"));
+  tip.style.display = "block";
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = clamp(e.clientX + 14, 4, innerWidth - tw - 4) + "px";
+  tip.style.top = clamp(e.clientY + 14, 4, innerHeight - th - 4) + "px";
+}
+
+/* ---------- BigQuery(閲覧者のコネクタ経由) ---------- */
+const mcpP = window.claude && window.claude.use ? window.claude.use("mcp") : Promise.resolve(null);
+const T = t => "`" + PROJECT + "." + DATASET + "." + t + "`";
+function conv(v, type) {
+  if (v == null) return null;
+  if (/^(FLOAT|FLOAT64|INTEGER|INT64|NUMERIC|BIGNUMERIC)$/.test(type)) return Number(v);
+  if (/^(BOOLEAN|BOOL)$/.test(type)) return v === true || v === "true";
+  return v;
+}
+async function bq(sql) {
+  const mcp = await mcpP;
+  if (!mcp) throw {code: "no_mcp"};
+  const call = async (tool, input, retried) => {
+    try { return (await mcp.callTool(BQ, tool, input)).payload; }
+    catch (e) {
+      if (e && e.retryable && !retried) {   // 一時的な失敗は1回だけ待って再試行(読み取りのみ)
+        await new Promise(r => setTimeout(r, (e.retryAfterMs || 1500) + Math.random() * 800));
+        return call(tool, input, true);
+      }
+      throw e;
+    }
+  };
+  let res = await call("execute_sql_readonly", {projectId: PROJECT, query: sql, timeoutMs: 30000});
+  if (typeof res === "string") res = JSON.parse(res);
+  for (let k = 0; res && res.jobComplete === false && k < 4; k++) {
+    const ref = res.jobReference || {}, id = ref.jobId || res.jobId;
+    if (!id) throw {code: "incomplete"};
+    res = await call("get_query_results", {projectId: PROJECT, jobId: id, location: ref.location || "asia-northeast1", timeoutMs: 30000});
+    if (typeof res === "string") res = JSON.parse(res);
+  }
+  if (!res || res.jobComplete === false) throw {code: "incomplete"};
+  const fields = (res.schema && res.schema.fields) || [];
+  return (res.rows || []).map(r => Object.fromEntries(fields.map((f, i) => [f.name, conv(r.f[i] && r.f[i].v, f.type)])));
+}
+function errorText(e) {
+  const c = e && e.code;
+  if (c === "no_mcp" || c === "not_granted" || c === "capability_disabled" || c === "capability_removed")
+    return ["このページはデータを BigQuery から読み込みます。", "claude.ai でこのページを開くと、Google Cloud BigQuery コネクタを使って読み込みます。"];
+  if (c === "server_not_connected") return ["Google Cloud BigQuery コネクタが見つかりません。", "claude.ai の 設定 → コネクタ で Google Cloud BigQuery を追加してから、ページを開き直してください。"];
+  if (c === "needs_reauth") return ["Google Cloud BigQuery コネクタの再接続が必要です。", "claude.ai の 設定 → コネクタ で Google Cloud BigQuery につなぎ直してください。"];
+  if (c === "selection_required") return ["Google Cloud BigQuery コネクタが複数あります。", "表示された案内で使うコネクタを1つ選んでください。"];
+  if (c === "not_in_manifest" || c === "approval_required" || c === "consent_required")
+    return ["BigQuery の読み込みが許可されていません。", "下のボタンから読み込むと、許可を求める案内が出ます。"];
+  if (c === "blocked_by_policy") return ["組織の設定で、このページから BigQuery を使えません。", ""];
+  if (c === "tool_error") return ["BigQuery がエラーを返しました。", String((e && e.message) || "").slice(0, 300)];
+  if (c === "incomplete") return ["BigQuery の集計が時間内に終わりませんでした。", "少し待ってから読み込み直してください。"];
+  return ["BigQuery から読み込めませんでした。", String((e && (e.message || e.code)) || "")];
+}
+function banner(lines, retry) {
+  const b = $("#banner");
+  if (!lines) { b.hidden = true; return; }
+  b.hidden = false;
+  b.replaceChildren(...[h("p", null, h("strong", null, lines[0])), lines[1] ? h("p", {class: "note"}, lines[1]) : null,
+    retry ? h("div", null, h("button", {class: "btn", type: "button", onclick: retry}, "読み込む")) : null].filter(Boolean));
+}
+const STATUS_RANK = st => !st ? 3 : st.startsWith("ブレイク") && !st.includes("不足") ? 0 : st === "ピボット接近" ? 1 : 2;
+function toStock(r) {
+  return {...r, tt: [1, 2, 3, 4, 5, 6, 7, 8].map(i => !!r["tt" + i]), reasons: (r.vcp_note || "").split(" / ").filter(Boolean)};
+}
+async function boot() {
+  banner(["BigQuery から読み込んでいます…", ""]);
+  try {
+    const ds = await bq(`SELECT DISTINCT CAST(as_of AS STRING) AS d FROM ${T("minervini_screen")} ORDER BY d DESC LIMIT 120`);
+    D.dates = ds.map(r => r.d);
+    if (!D.dates.length) { banner(["まだスクリーニング結果がありません。", "GitHub Actions の minervini-screen か daily-update が実行されると表示されます。"]); return; }
+    await loadDay(D.dates[0], true);
+  } catch (e) {
+    const t = errorText(e);
+    if (e && e.code === "tool_error" && /not found/i.test(String(e.message))) t.splice(0, 2, "まだスクリーニング結果のテーブルがありません。", "GitHub Actions の minervini-screen か daily-update が実行されると作られます。");
+    banner(t, ["not_in_manifest", "approval_required", "consent_required", "tool_error", "incomplete", "server_unavailable", "upstream_error"].includes(e && e.code) ? boot : null);
+  }
+}
+async function loadDay(asof, fromBoot) {
+  banner(["BigQuery から読み込んでいます…", ""]);
+  let rows;
+  try { rows = await bq(`SELECT * EXCEPT(loaded_at), CAST(as_of AS STRING) AS as_of_s, CAST(base_start AS STRING) AS base_start_s,
+      CAST(dry_from AS STRING) AS dry_from_s, CAST(dry_to AS STRING) AS dry_to_s
+    FROM ${T("minervini_screen")} WHERE as_of = DATE '${asof.replace(/[^0-9-]/g, "")}'`); }
+  catch (e) { if (fromBoot) throw e; banner(errorText(e), () => loadDay(asof)); return; }
+  D.as_of = asof;
+  const all = rows.map(toStock);
+  stocks = all.filter(x => x.tt_pass).sort((a, b) => STATUS_RANK(a.status) - STATUS_RANK(b.status) || (b.rs - a.rs));
+  D.near = all.filter(x => !x.tt_pass).sort((a, b) => b.rs - a.rs);
+  byCode = Object.fromEntries(stocks.map(x => [x.code, x]));
+  state.code = null;
+  loadReview();
+  banner(null);
+  $("#main").hidden = false;
+  renderCounts();
+  renderList();
+}
+async function loadPrices(x) {
+  if (!x || x.c || x.loading) return;
+  x.loading = true; x.priceError = null;
+  const code = String(x.code).replace(/[^0-9A-Za-z]/g, ""), asof = D.as_of.replace(/[^0-9-]/g, "");
+  try {
+    // 200日線を250営業日ぶん描くため、約450営業日(700暦日)を読む。価格は配当調整後にそろえる(src/minervini.py と同じ)
+    const rows = await bq(`WITH p AS (
+        SELECT date, adj_close AS c, volume AS v,
+          COALESCE(open * adj_close / NULLIF(close, 0), adj_close) AS o,
+          COALESCE(high * adj_close / NULLIF(close, 0), adj_close) AS hi,
+          COALESCE(low * adj_close / NULLIF(close, 0), adj_close) AS lo
+        FROM ${T("prices")}
+        WHERE code = '${code}' AND date <= DATE '${asof}' AND date >= DATE_SUB(DATE '${asof}', INTERVAL 700 DAY) AND adj_close IS NOT NULL),
+      w AS (
+        SELECT *,
+          IF(COUNT(c) OVER w50 = 50, AVG(c) OVER w50, NULL) AS m50,
+          IF(COUNT(c) OVER w150 = 150, AVG(c) OVER w150, NULL) AS m150,
+          IF(COUNT(c) OVER w200 = 200, AVG(c) OVER w200, NULL) AS m200,
+          IF(COUNT(v) OVER w50 = 50, AVG(v) OVER w50, NULL) AS va
+        FROM p
+        WINDOW w50 AS (ORDER BY date ROWS 49 PRECEDING), w150 AS (ORDER BY date ROWS 149 PRECEDING), w200 AS (ORDER BY date ROWS 199 PRECEDING))
+      SELECT CAST(date AS STRING) AS d, o, hi, lo, c, v, va, m50, m150, m200 FROM w ORDER BY date DESC LIMIT 250`);
+    rows.reverse();
+    const col = k => rows.map(r => r[k]);
+    Object.assign(x, {d: col("d"), o: col("o"), h: col("hi"), l: col("lo"), c: col("c"), v: col("v"), va: col("va"), m50: col("m50"), m150: col("m150"), m200: col("m200")});
+    const at = Object.fromEntries(x.d.map((d, i) => [d, i]));
+    let zz = []; try { zz = JSON.parse(x.zigzag || "[]"); } catch (e) { zz = []; }
+    x.zz = zz.map(([k, d, v]) => [k, at[d] ?? -1, v]);
+    x.start = x.base_start_s && at[x.base_start_s] != null ? at[x.base_start_s] : null;
+    x.dry = x.dry_from_s && x.dry_to_s && at[x.dry_to_s] != null ? [at[x.dry_from_s] ?? 0, at[x.dry_to_s] + 1] : null;
+    if (!rows.length) { delete x.c; x.priceError = "この銘柄の株価がありません。"; }
+  } catch (e) {
+    x.priceError = errorText(e).filter(Boolean).join(" ");
+  } finally {
+    x.loading = false;
+  }
+  if (state.code === x.code && state.tab !== "near") drawChart(x);
+}
+
+/* ---------- コピー ---------- */
+function reviewText() {
+  const lines = [`VCPスクリーニング検証 基準日 ${D.as_of}`];
+  for (const x of stocks) { const r = review[x.code]; if (!r || (!r.mark && !r.memo)) continue;
+    lines.push(`${x.code} ${x.name}【${x.vcp ? "VCP " + x.status : "不合格: " + x.reasons.join("、")}】 ${({ok: "妥当", ng: "要修正", q: "保留"})[r.mark] || "-"}${r.memo ? " / " + r.memo : ""}`); }
+  return lines.length > 1 ? lines.join("\n") : "";
+}
+$("#copy").addEventListener("click", () => {
+  const t = reviewText(), msg = $("#copy-msg"), pre = $("#copy-src");
+  if (!t) { msg.textContent = "まだ印やメモがありません。"; return; }
+  const fallback = () => { pre.hidden = false; pre.textContent = t; const r = document.createRange(); r.selectNodeContents(pre); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    msg.textContent = "コピーできなかったので、下に表示した文字を選択しました。手動でコピーしてください。"; };
+  try { navigator.clipboard.writeText(t).then(() => { msg.textContent = "コピーしました。"; pre.hidden = true; }, fallback); } catch (e) { fallback(); }
+});
+
+/* ---------- 起動 ---------- */
+document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click", () => {
+  state.tab = b.dataset.t; state.reason = null;
+  try { localStorage.setItem("minervini-tab", state.tab); } catch (e) { /* 無視 */ }
+  renderList();
+}));
+document.addEventListener("pointermove", e => { if (e.target.closest && e.target.closest("#chart")) hover(e); else if (CH) { CH.cross.setAttribute("visibility", "hidden"); $("#tip").style.display = "none"; } });
+let rz = 0; addEventListener("resize", () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => { if (state.code && state.tab !== "near") drawChart(byCode[state.code]); }); });
+boot();
+</script>

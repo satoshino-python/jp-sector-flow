@@ -89,6 +89,12 @@ jobs:
       - name: Save to BigQuery
         run: python src/bq_sync.py --require
 
+      - name: Minervini screen (best effort)
+        # トレンドテンプレート + VCP のスクリーニング結果を BigQuery の minervini_screen に保存する。
+        # 失敗しても本体の更新には影響させない
+        continue-on-error: true
+        run: python src/minervini.py --save
+
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
