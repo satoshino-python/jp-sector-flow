@@ -1,0 +1,40 @@
+name: minervini-backtest
+
+# ミネルヴィニのルールのバックテスト(src/minervini_backtest.py)。BigQuery の株価で過去の売買を再現し、
+# 成績をログに出して、売買の一覧を BigQuery の minervini_backtest に保存する(実行のたびに全置換)。
+# 手動実行のほか、バックテストを変更したブランチへの push でも動く
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "シグナルの開始日"
+        default: "2021-01-01"
+      end:
+        description: "シグナルの終了日"
+        default: "2025-12-31"
+  push:
+    branches-ignore: [main, snapshot]
+    paths: [src/minervini_backtest.py, .github/workflows/minervini-backtest.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Backtest
+        env:
+          START: ${{ inputs.start || '2021-01-01' }}
+          END: ${{ inputs.end || '2025-12-31' }}
+        run: python src/minervini_backtest.py --start "$START" --end "$END" --save

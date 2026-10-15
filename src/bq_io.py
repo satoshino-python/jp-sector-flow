@@ -74,6 +74,16 @@ MINERVINI_SCHEMA = (
        ("breakeven_at", "FLOAT64"), ("loaded_at", "TIMESTAMP")]
 )
 
+BACKTEST_SCHEMA = [
+    ("period", "STRING"), ("variant", "STRING"), ("code", "STRING"), ("name", "STRING"), ("sector", "STRING"),
+    ("signal_date", "DATE"), ("result", "STRING"), ("pivot", "FLOAT64"), ("stop", "FLOAT64"), ("stop_basis", "STRING"),
+    ("atr_pct", "FLOAT64"), ("rs", "FLOAT64"), ("depths", "STRING"), ("n_contractions", "INT64"),
+    ("base_days", "INT64"), ("dryup", "FLOAT64"), ("breakout_vol", "FLOAT64"),
+    ("entry_date", "DATE"), ("entry", "FLOAT64"), ("risk_pct", "FLOAT64"), ("exit_date", "DATE"), ("exit", "FLOAT64"),
+    ("exit_reason", "STRING"), ("r_mult", "FLOAT64"), ("ret_pct", "FLOAT64"), ("hold_days", "INT64"),
+    ("mfe_r", "FLOAT64"), ("loaded_at", "TIMESTAMP"),
+]
+
 TABLES = {
     "prices": dict(schema=PRICES_SCHEMA, partition="date", cluster=["code"],
                    desc="株価(日次)。キーは (date, code)"),
@@ -86,6 +96,9 @@ TABLES = {
     "minervini_screen": dict(schema=MINERVINI_SCHEMA, partition="as_of", cluster=["code"],
                              desc="ミネルヴィニのスクリーニング結果(src/minervini.py)。キーは (as_of, code)。"
                                   "テンプレートを6条件以上満たした銘柄。zigzag は [種類, 日付, 価格] のJSON"),
+    "minervini_backtest": dict(schema=BACKTEST_SCHEMA, partition=None, cluster=["variant"],
+                               desc="ミネルヴィニのルールのバックテスト(src/minervini_backtest.py)。シグナルごとの売買と"
+                                    "見送り。variant は損切り幅の下限(ATRの倍数)。実行のたびに全置換"),
 }
 
 
