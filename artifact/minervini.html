@@ -651,7 +651,7 @@ async function loadDay(asof, fromBoot) {
   $("#main").hidden = false;
   renderList();
 }
-const clean = v => String(v).replace(/[^0-9A-Za-z-]/g, "");
+const clean = v => String(v).replace(/[^0-9A-Za-z_-]/g, "");   // SQL に埋め込む値(銘柄コード・日付・ルール名)以外の文字を除く
 // 銘柄 code の、from〜to の日足と移動平均。価格は配当調整後にそろえる(src/minervini.py と同じ)。
 // 200日線を from から描けるように、移動平均は from の約320暦日前から計算する
 const priceSQL = (code, from, to) => `WITH p AS (
@@ -718,14 +718,20 @@ async function loadBT() {
   BT.loading = true;
   banner(["バックテストの結果を BigQuery から読み込んでいます…", ""]);
   try {
-    const rows = await bq(`SELECT * EXCEPT(loaded_at) FROM ${T("minervini_backtest")} ORDER BY signal_date, code`);
-    BT.rows = rows.map(r => ({...r, base_start_s: r.base_start, dry_from_s: r.dry_from, dry_to_s: r.dry_to}));
+    // ルールごとの成績(保有中で見送ったシグナルは件数だけ)
+    const st = await bq(`SELECT variant, ANY_VALUE(period) AS period,
+        COUNTIF(result = '売買') AS n, COUNTIF(result = '売買' AND r_mult > 0) AS nwin,
+        AVG(IF(result = '売買', r_mult, NULL)) AS avg, SUM(IF(result = '売買', r_mult, 0)) AS total,
+        SUM(IF(result = '売買' AND r_mult > 0, r_mult, 0)) AS gwin, -SUM(IF(result = '売買' AND r_mult <= 0, r_mult, 0)) AS gloss,
+        COUNTIF(result != '売買' AND result != '見送り: 保有中') AS skip, COUNTIF(result = '見送り: 保有中') AS busy
+      FROM ${T("minervini_backtest")} GROUP BY variant ORDER BY variant`);
+    BT.stats = Object.fromEntries(st.map(r => [r.variant, r]));
     BT.loaded = true;
-    const vs = [...new Set(BT.rows.map(r => r.variant))].sort();
+    const vs = st.map(r => r.variant);
     if (!vs.includes(BT.variant)) BT.variant = vs[0];
     $("#bt-variant").replaceChildren(...vs.map(v => h("option", {value: v, selected: v === BT.variant}, VLABEL[v] || v)));
-    banner(null);
-    renderBT();
+    BT.loading = false;
+    await loadVariant(BT.variant);
   } catch (e) {
     const t = errorText(e);
     if (e && e.code === "tool_error" && /not found/i.test(String(e.message))) t.splice(0, 2, "まだバックテストの結果がありません。", "GitHub Actions の minervini-backtest を実行すると作られます。");
@@ -734,25 +740,41 @@ async function loadBT() {
     BT.loading = false;
   }
 }
-function btStats(list) {
-  const t = list.filter(x => x.result === "売買"), win = t.filter(x => x.r_mult > 0), loss = t.filter(x => x.r_mult <= 0);
-  const sum = a => a.reduce((s, x) => s + x.r_mult, 0), gl = -sum(loss);
-  return {n: t.length, skip: list.length - t.length, win: t.length ? win.length / t.length * 100 : null,
-    avg: t.length ? sum(t) / t.length : null, total: sum(t), pf: gl > 0 ? sum(win) / gl : null,
-    period: list[0] && list[0].period};
+// 一覧に要る列だけを、ルールごとに読む(52週高値抜けは数千件あるため。保有中で見送ったシグナルは読まない)
+async function loadVariant(v) {
+  BT.byVariant = BT.byVariant || {};
+  if (!BT.byVariant[v]) {
+    banner(["バックテストの結果を BigQuery から読み込んでいます…", ""]);
+    try {
+      BT.byVariant[v] = await bq(`SELECT variant, rule, code, name, sector, signal_date, result, r_mult, ret_pct, exit_reason
+        FROM ${T("minervini_backtest")} WHERE variant = '${clean(v)}' AND result != '見送り: 保有中' ORDER BY signal_date, code`);
+    } catch (e) { banner(errorText(e), () => loadVariant(v)); return; }
+  }
+  if (BT.variant !== v) return;
+  BT.rows = BT.byVariant[v];
+  banner(null);
+  renderBT();
+}
+function btStats(v) {
+  const r = (BT.stats || {})[v] || {};
+  return {n: r.n || 0, skip: r.skip || 0, busy: r.busy || 0, win: r.n ? r.nwin / r.n * 100 : null, avg: r.avg,
+    total: r.total, pf: r.gloss > 0 ? r.gwin / r.gloss : null, period: r.period};
 }
 function renderBT() {
   if (!BT.loaded) return;
-  const all = BT.rows.filter(x => x.variant === BT.variant), st = btStats(all);
+  const all = BT.rows, st = btStats(BT.variant);
   const tile = (lab, val) => h("div", {class: "stat"}, h("span", null, lab), h("b", null, val));
   $("#bt-stats").replaceChildren(tile("売買", st.n + "件"), tile("勝率", st.win == null ? "-" : fx(st.win, 0) + "%"),
     tile("平均", fr(st.avg)), tile("合計", fr(st.total)), tile("PF", st.pf == null ? "-" : fx(st.pf, 2)), tile("見送り", st.skip + "件"));
+  if (st.busy) $("#bt-stats").append(h("p", {class: "note", style: "grid-column:1/-1;margin:0"}, `ほかに、同じ銘柄を保有中だったため見送ったシグナルが ${st.busy} 件あります(一覧には出しません)。`));
   document.querySelectorAll("#bt-result button").forEach(b => b.setAttribute("aria-pressed", b.dataset.r === BT.result ? "true" : "false"));
   $("#bt-note").textContent = (VNOTE[BT.variant] || "") + (BT.result === "trade"
     ? " シグナルの翌日始値で買い、終値が50日線を割った翌日始値で売ります(2Rで損切りを買値へ)。"
     : " シグナルは出たが買わなかったもの。理由を確かめられます。") + (st.period ? ` シグナルの期間 ${st.period}。` : "");
   let list = all.filter(x => BT.result === "trade" ? x.result === "売買" : x.result !== "売買");
   list = BT.sort === "r" && BT.result === "trade" ? [...list].sort((a, b) => b.r_mult - a.r_mult) : list;
+  const total = list.length;
+  if (list.length > 400) list = list.slice(0, 400);     // 表示が重くなるので先頭400件まで
   const tb = $("#bt-list");
   tb.replaceChildren(
     h("thead", null, h("tr", null, h("th", null, "シグナル日"), h("th", {style: "text-align:left"}, "銘柄"), h("th", null, BT.result === "trade" ? "損益" : "理由"))),
@@ -766,12 +788,27 @@ function renderBT() {
           : h("td", {class: "wrap", style: "text-align:left"}, x.result.replace("見送り: ", "")));
     })));
   if (!list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 3}, "該当するシグナルはありません。"))));
+  if (total > list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 3, class: "wrap", style: "text-align:left"},
+    `全${total}件のうち先頭の${list.length}件を表示しています。並びを変えると別の${list.length}件を見られます。`))));
   if (!list.some(x => btKey(x) === BT.key)) { if (list.length) selectBT(btKey(list[0])); else $("#bt-detail").replaceChildren(h("p", {class: "note"}, "左のリストにシグナルがありません。")); }
 }
-function selectBT(key) {
+async function selectBT(key) {
   BT.key = key;
   document.querySelectorAll("#bt-list tbody tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.key === key));
   const x = BT.rows.find(r => btKey(r) === key);
+  if (!x) return;
+  if (!x.full) {          // 詳細(VCP の位置や売買の価格)は選んだときに読む
+    $("#bt-detail").replaceChildren(h("div", {class: "state"}, "読み込んでいます…"));
+    try {
+      const [r] = await bq(`SELECT * EXCEPT(loaded_at) FROM ${T("minervini_backtest")}
+        WHERE variant = '${clean(x.variant)}' AND code = '${clean(x.code)}' AND signal_date = DATE '${clean(x.signal_date)}' LIMIT 1`);
+      if (r) Object.assign(x, r, {base_start_s: r.base_start, dry_from_s: r.dry_from, dry_to_s: r.dry_to, full: true});
+    } catch (e) {
+      $("#bt-detail").replaceChildren(h("div", {class: "state"}, errorText(e).filter(Boolean).join(" ")));
+      return;
+    }
+  }
+  if (BT.key !== key) return;
   renderBTDetail(x);
   loadBTPrices(x);
 }
@@ -829,7 +866,7 @@ function renderBTDetail(x) {
     h("div", {class: "key"},
       h("span", null, h("i", {style: "border-color:var(--ma50);border-top-width:3px"}), "50日線(売りの基準)"), h("span", null, h("i", {style: "border-color:var(--ma150)"}), "150日線"),
       h("span", null, h("i", {style: "border-color:var(--ma200)"}), "200日線"), h("span", null, h("i", {class: "box", style: "background:var(--base)"}), "ベース"),
-      h("span", null, h("i", {style: "border-color:var(--zz);border-top-style:dashed"}), "検出した収縮"), h("span", null, h("i", {style: "border-color:var(--pivot)"}), "ピボット"),
+      h("span", null, h("i", {style: "border-color:var(--zz);border-top-style:dashed"}), "検出した収縮"), h("span", null, h("i", {style: "border-color:var(--pivot)"}), isHigh52(x) ? "52週高値" : "ピボット"),
       h("span", null, h("i", {style: "border-color:var(--stop);border-top-style:dashed"}), "損切り"),
       h("span", null, h("span", {style: "color:var(--buy)"}, "▲"), "買い"), h("span", null, h("span", {style: "color:var(--sell)"}, "▼"), "売り"),
       traded ? h("span", null, h("i", {class: "box", style: `background:var(${x.r_mult > 0 ? "--holdwin" : "--holdloss"})`}), "保有期間") : null),
@@ -915,7 +952,7 @@ let rz = 0; addEventListener("resize", () => { cancelAnimationFrame(rz); rz = re
   else if (state.code && state.tab !== "near") drawChart(byCode[state.code]); }); });
 document.querySelectorAll("#mode button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.m)));
 document.querySelectorAll("#bt-result button").forEach(b => b.addEventListener("click", () => { BT.result = b.dataset.r; renderBT(); }));
-$("#bt-variant").addEventListener("change", e => { BT.variant = e.target.value; renderBT(); });
+$("#bt-variant").addEventListener("change", e => { BT.variant = e.target.value; BT.key = null; loadVariant(BT.variant); });
 $("#bt-sort").addEventListener("change", e => { BT.sort = e.target.value; renderBT(); });
 setMode(state.mode);
 </script>
