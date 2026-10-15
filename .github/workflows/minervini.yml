@@ -9,11 +9,11 @@ on:
         description: "判定日(YYYY-MM-DD)。空なら最新"
         required: false
   push:
-    branches-ignore: [main, snapshot]
+    branches-ignore: [main, snapshot, "minervini-data/**"]
     paths: [src/minervini.py, .github/workflows/minervini.yml]
 
 permissions:
-  contents: read
+  contents: write   # 検証用ページのデータを minervini-data/run-<実行番号> ブランチへ push する
 
 jobs:
   screen:
@@ -36,20 +36,28 @@ jobs:
         run: |
           mkdir -p out
           if [ -n "$AS_OF" ]; then
-            python src/minervini.py --bq --as-of "$AS_OF" --equity 5000000 --out "out/minervini_$AS_OF.csv"
+            python src/minervini.py --bq --as-of "$AS_OF" --equity 5000000 --out "out/minervini_$AS_OF.csv" --charts out/charts.json
           else
-            python src/minervini.py --bq --equity 5000000 --out out/minervini.csv
+            python src/minervini.py --bq --equity 5000000 --out out/minervini.csv --charts out/charts.json
           fi
 
-      - name: Screen past dates (push only, for checking)
-        if: github.event_name == 'push'
+      - name: Publish chart data
+        # 検証用ページ(artifact/build_minervini.py)が使う JSON。main の履歴に入れないよう、
+        # 実行ごとに新しい孤立ブランチ minervini-data/run-<実行番号> に1コミットだけ push する(上書きはしない)
         run: |
-          for d in 2026-03-31 2026-06-30 2026-09-01; do
-            echo "=== $d ==="
-            python src/minervini.py --bq --as-of "$d" --equity 5000000 --out "out/minervini_$d.csv"
-          done
+          d="$(mktemp -d)"
+          cp out/charts.json "$d/minervini_charts.json"
+          cd "$d"
+          b="minervini-data/run-${{ github.run_id }}"
+          git init -q -b "$b"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add minervini_charts.json
+          git commit -qm "minervini charts: $(date -u +%Y-%m-%d)"
+          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "$b"
+          echo "chart data → $b"
 
       - uses: actions/upload-artifact@v4
         with:
           name: minervini
-          path: out/
+          path: out/*.csv

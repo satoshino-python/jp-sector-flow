@@ -95,14 +95,14 @@ def _pivot(prices: pd.DataFrame, col: str) -> pd.DataFrame:
 def load_panels(prices: pd.DataFrame, codes: list[str]) -> dict[str, pd.DataFrame]:
     """配当調整後の水準にそろえた始値・高値・安値・終値と出来高。
 
-    高値・安値がない行(古いデータ)は終値で埋める(その分 ATR は小さめに出る)。
+    始値・高値・安値がない行(古いデータ)は終値で埋める(その分 ATR は小さめに出る)。
     """
     close = _pivot(prices, "close").reindex(columns=codes)
     adj = (_pivot(prices, "adj_close") if "adj_close" in prices.columns else close).reindex(columns=codes)
     adj = adj.fillna(close)
     f = (adj / close).where(close > 0)
     out = {"close": adj, "volume": _pivot(prices, "volume").reindex(columns=codes)}
-    for c in ["high", "low"]:
+    for c in ["open", "high", "low"]:
         raw = _pivot(prices, c).reindex(columns=codes) if c in prices.columns else close * np.nan
         out[c] = (raw * f).fillna(adj)
     return out
@@ -198,6 +198,9 @@ class Vcp:
     pivot: float = np.nan
     final_low: float = np.nan
     dryup: float = np.nan
+    start: int = -1                                   # ベースの起点の位置(系列の先頭からの添字)
+    points: list = field(default_factory=list)        # ZigZag の転換点 ('H'/'L', 添字, 値)。最後は進行中
+    dry_end: int = -1                                 # 出来高の細りを見た期間の終わり(この添字の手前まで)
 
 
 def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series,
@@ -211,7 +214,7 @@ def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Ser
     start = lo_i + int(np.nanargmax(h[lo_i:hi_i]))
     base_days = n - 1 - start
     if base_days < MIN_BASE_DAYS:
-        return Vcp(reason="ベースが短い", base_days=base_days)
+        return Vcp(reason="ベースが短い", base_days=base_days, start=start)
 
     th = max(ZZ_MIN_PCT, ZZ_ATR_MULT * atr_pct)
     pts = zigzag(h[start:], l[start:], th)
@@ -224,9 +227,11 @@ def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Ser
         if seq[k][0] == "H" and seq[k + 1][0] == "L":
             depths.append(1 - seq[k + 1][2] / seq[k][2])
             lows.append(seq[k + 1])
-    v = Vcp(base_days=base_days, depths=depths)
+    v = Vcp(base_days=base_days, depths=depths, start=start,
+            points=[(k, start + i, val) for k, i, val in pts])
     if not depths:
-        return Vcp(reason="収縮なし", base_days=base_days)
+        v.reason = "収縮なし"
+        return v
     v.pivot = highs[len(depths) - 1][2]           # 最後の収縮の起点の高値
     v.final_low = lows[-1][2]
     vol = volume.to_numpy(float)
@@ -234,6 +239,7 @@ def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Ser
     # ブレイク後は出来高が膨らむので、細りは最後の収縮の安値までの直近で見る
     end = start + lows[-1][1] + 1 if last[0] == "H" else n
     v.dryup = float(np.nanmean(vol[max(end - DRYUP_DAYS, 0):end]) / avg) if avg and avg > 0 else np.nan
+    v.dry_end = end
 
     reasons = []
     if not MIN_CONTRACTIONS <= len(depths) <= MAX_CONTRACTIONS:
@@ -298,13 +304,17 @@ def plan_trade(v: Vcp, last: float, atr_v: float, broke_out: bool, equity: float
     return plan
 
 
-def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None) -> tuple[pd.Timestamp, pd.DataFrame]:
+def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None,
+           charts: dict | None = None) -> tuple[pd.Timestamp, pd.DataFrame]:
+    """charts に dict を渡すと、テンプレート通過銘柄のチャート用データ(chart_payload)を銘柄コードをキーに入れる。"""
     stocks = uni[uni["type"] == "stock"].set_index("code")
     codes = [c for c in stocks.index if c in set(prices["code"])]
     p = load_panels(prices, codes)
     as_of = p["close"].index[-1]
     tt = trend_template(p)
     tt = tt[tt["close"].notna()]
+    if charts is not None:
+        charts["_tt"] = tt          # 全銘柄のテンプレート判定(write_charts で使う。main で取り出す)
 
     rows = []
     for code in tt.index[tt["tt_pass"]]:
@@ -326,6 +336,8 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None)
             if not row["risk_ok"] and not status.startswith("伸びすぎ"):
                 row["status"] = "リスク過大(見送り)"
         rows.append(row)
+        if charts is not None:
+            charts[code] = chart_payload(p, code, v, row, a)
 
     out = tt[tt["tt_pass"]].join(pd.DataFrame(rows).set_index("code") if rows else pd.DataFrame())
     out = out.join(stocks[["name", "sector"]])
@@ -341,6 +353,95 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame, equity: float | None = None)
     out = out.sort_values(["_o", "rs"], ascending=[True, False]).drop(columns="_o")
     out.index.name = "code"
     return as_of, out
+
+
+CHART_DAYS = 250   # チャートに載せる営業日数
+
+
+def _r(x, nd=2):
+    return None if x is None or not np.isfinite(x) else round(float(x), nd)
+
+
+def chart_payload(p: dict[str, pd.DataFrame], code: str, v: Vcp, row: dict, atr_v: float) -> dict:
+    """検証用チャートのデータ。日付は呼び出し側で共通の配列にそろえる(ここでは日付文字列のまま)。
+
+    価格はすべて配当調整後の水準。
+    """
+    cl = p["close"][code].dropna()
+    idx = cl.index
+    hi, lo = p["high"][code].reindex(idx).fillna(cl), p["low"][code].reindex(idx).fillna(cl)
+    op = p["open"][code].reindex(idx).fillna(cl)
+    vo = p["volume"][code].reindex(idx)
+    ma = {n: cl.rolling(n).mean() for n in (50, 150, 200)}
+    vavg = vo.rolling(VOL_AVG_DAYS).mean()
+    off = max(len(cl) - CHART_DAYS, 0)
+
+    def ser(s, nd=2):
+        return [_r(x, nd) for x in s.iloc[off:]]
+
+    def pos(i):   # 系列全体の添字 → チャート上の添字(表示範囲より前なら負)
+        return int(i) - off
+
+    out = {
+        "d": [d.strftime("%Y-%m-%d") for d in idx[off:]],
+        "o": ser(op), "h": ser(hi), "l": ser(lo), "c": ser(cl), "v": ser(vo, 0), "va": ser(vavg, 0),
+        "m50": ser(ma[50]), "m150": ser(ma[150]), "m200": ser(ma[200]),
+        "start": pos(v.start) if v.start >= 0 else None,
+        "zz": [[k, pos(i), _r(val)] for k, i, val in v.points],
+        "dry": [pos(v.dry_end - DRYUP_DAYS), pos(v.dry_end)] if v.dry_end >= 0 else None,
+        "atr": _r(atr_v),
+    }
+    keep = ["atr_pct", "vcp", "vcp_note", "base_days", "n_contractions", "depths", "pivot", "dryup", "status",
+            "breakout_vol", "to_pivot_pct", "entry", "stop", "stop_basis", "risk_pct", "risk_atr",
+            "target_2r", "target_3r", "breakeven_at", "shares"]
+    for k in keep:
+        val = row.get(k)
+        if isinstance(val, (float, np.floating)):
+            val = _r(val, 3)
+        elif isinstance(val, np.bool_):
+            val = bool(val)
+        elif isinstance(val, np.integer):
+            val = int(val)
+        out[k] = val
+    return out
+
+
+def write_charts(path: str, as_of, out: pd.DataFrame, tt_all: pd.DataFrame, charts: dict, uni: pd.DataFrame) -> None:
+    """検証用ページ(artifact/minervini.template.html)に埋め込む JSON を書き出す。"""
+    import json
+
+    names = uni.set_index("code")[["name", "sector"]]
+    tt_cols = [f"tt{i}" for i in range(1, 9)]
+    base = ["close", "ma50", "ma150", "ma200", "high52", "low52", "rs", "pct_from_high52", "pct_from_low52"]
+
+    def tt_row(code, r):
+        d = {"code": code, "name": names.at[code, "name"] if code in names.index else code,
+             "sector": names.at[code, "sector"] if code in names.index else ""}
+        d.update({k: _r(r[k]) for k in base})
+        d["tt"] = [bool(r[k]) for k in tt_cols]
+        return d
+
+    stocks = []
+    for code, r in out.iterrows():
+        d = tt_row(code, r)
+        d.update(charts.get(code, {}))
+        stocks.append(d)
+    near = tt_all[(tt_all["tt_score"] < 8) & (tt_all["tt_score"] >= 6)].sort_values("rs", ascending=False)
+    doc = {
+        "as_of": as_of.strftime("%Y-%m-%d"),
+        "n_universe": int(len(tt_all)),
+        "params": {k: globals()[k] for k in [
+            "MIN_ABOVE_LOW", "MAX_BELOW_HIGH", "MIN_RS", "BASE_LOOKBACK", "MIN_BASE_DAYS", "ZZ_MIN_PCT", "ZZ_ATR_MULT",
+            "MIN_CONTRACTIONS", "MAX_CONTRACTIONS", "MAX_FIRST_DEPTH", "MAX_FINAL_DEPTH", "CONTRACTION_TOL",
+            "FINAL_VS_FIRST", "DRYUP_DAYS", "MAX_DRYUP_RATIO", "BREAKOUT_VOL_RATIO", "MAX_CHASE",
+            "STOP_ATR_BUFFER", "STOP_ATR_MIN", "MAX_RISK_PCT", "BREAKEVEN_R"]},
+        "tt_counts": [int(tt_all[k].sum()) for k in tt_cols],
+        "stocks": stocks,
+        "near": [tt_row(c, r) for c, r in near.iterrows()],   # 6〜7条件を満たした銘柄(テンプレートの確認用)
+    }
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
 def _print(as_of, out: pd.DataFrame, n_universe: int) -> None:
@@ -368,6 +469,7 @@ def main() -> int:
     ap.add_argument("--equity", type=float, help="資金額(円)。指定すると株数を出す")
     ap.add_argument("--bq", action="store_true", help="BigQuery の prices から直接読む")
     ap.add_argument("--out", default=str(OUT))
+    ap.add_argument("--charts", help="検証用ページに埋め込むチャートのデータ(JSON)の書き出し先")
     args = ap.parse_args()
 
     uni = pd.read_csv(UNIVERSE, dtype={"code": str})
@@ -390,10 +492,15 @@ def main() -> int:
     prices["code"] = prices["code"].astype(str)
     if args.as_of:
         prices = prices[prices["date"] <= pd.Timestamp(args.as_of)]
-    as_of, out = screen(prices, uni, args.equity)
+    charts = {} if args.charts else None
+    as_of, out = screen(prices, uni, args.equity, charts)
     out.round(4).to_csv(args.out, encoding="utf-8-sig")
     _print(as_of, out, int((uni["type"] == "stock").sum()))
     print(f"→ {args.out}")
+    if charts is not None:
+        tt_all = charts.pop("_tt")
+        write_charts(args.charts, as_of, out, tt_all, charts, uni)
+        print(f"→ {args.charts}")
     return 0
 
 
