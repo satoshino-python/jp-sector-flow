@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -111,7 +112,12 @@ def find_signals(p, panel, stocks: dict[str, Stock], start, end) -> pd.DataFrame
             status, vr, _ = mv.entry_status(v, cl, vo)
             if status != "ブレイク":
                 continue
+            day = lambda k: s.dates[a + k].strftime("%Y-%m-%d")   # noqa: E731  slice 内の位置 → 日付
             rows.append({"code": code, "signal_date": d, "i": i, "pivot": v.pivot, "final_low": v.final_low,
+                         # 検証用ページでチャートに重ねるための位置(日付)。daily の minervini_screen と同じ形
+                         "base_start": day(v.start),
+                         "zigzag": json.dumps([[t, day(k), round(float(val), 2)] for t, k, val in v.points]),
+                         "dry_from": day(max(v.dry_end - mv.DRYUP_DAYS, 0)), "dry_to": day(v.dry_end - 1),
                          "atr": atr_v, "atr_pct": atr_v / cl.iloc[-1] * 100, "close": cl.iloc[-1],
                          "breakout_vol": vr, "depths": " → ".join(f"{x * 100:.0f}%" for x in v.depths),
                          "n_contractions": len(v.depths), "base_days": v.base_days, "dryup": v.dryup,
@@ -131,6 +137,8 @@ def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], k: float) -> pd.DataFr
         plan = mv.plan_trade(r.vcp_obj, r.close, r.atr, True, None, stop_atr_min=k)
         stop0 = plan["stop"]
         rec = {"variant": f"stop{k}", "code": r.code, "signal_date": r.signal_date.date(), "pivot": r.pivot,
+               "final_low": r.final_low, "base_start": r.base_start, "zigzag": r.zigzag,
+               "dry_from": r.dry_from, "dry_to": r.dry_to,
                "stop": stop0, "stop_basis": plan["stop_basis"], "atr_pct": r.atr_pct, "rs": r.rs,
                "depths": r.depths, "n_contractions": r.n_contractions, "base_days": r.base_days,
                "dryup": r.dryup, "breakout_vol": r.breakout_vol}
@@ -153,7 +161,7 @@ def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], k: float) -> pd.DataFr
             out.append({**rec, "entry": entry, "result": "見送り: リスク過大"})
             continue
 
-        stop, be_done, mfe = stop0, False, entry
+        stop, be_done, mfe, be_i = stop0, False, entry, None
         exit_i, exit_px, reason = None, None, None
         j = e
         n = len(a["o"])
@@ -167,7 +175,7 @@ def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], k: float) -> pd.DataFr
                 break
             mfe = max(mfe, h)
             if not be_done and h >= entry + mv.BREAKEVEN_R * risk:   # 翌日から損切りを買値へ
-                stop, be_done = max(stop, entry), True
+                stop, be_done, be_i = max(stop, entry), True, j + 1
             if np.isfinite(a["ma50"][j]) and c < a["ma50"][j]:      # 50日線割れ → 翌日の始値で売る
                 if j + 1 < n:
                     exit_i, exit_px, reason = j + 1, a["o"][j + 1], "50日線割れ"
@@ -181,7 +189,9 @@ def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], k: float) -> pd.DataFr
         out.append({**rec, "result": "売買", "entry_date": s.dates[e].date(), "entry": entry,
                     "risk_pct": risk / entry * 100, "exit_date": s.dates[exit_i].date(), "exit": exit_px,
                     "exit_reason": reason, "r_mult": (exit_px - entry) / risk, "ret_pct": (exit_px / entry - 1) * 100,
-                    "hold_days": exit_i - e + 1, "mfe_r": (mfe - entry) / risk})
+                    "hold_days": exit_i - e + 1, "mfe_r": (mfe - entry) / risk,
+                    # 損切りを買値に上げた日(この日から有効)
+                    "breakeven_date": s.dates[be_i].date() if be_i is not None and be_i < len(s.dates) else None})
     return pd.DataFrame(out)
 
 

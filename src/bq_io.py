@@ -82,6 +82,9 @@ BACKTEST_SCHEMA = [
     ("entry_date", "DATE"), ("entry", "FLOAT64"), ("risk_pct", "FLOAT64"), ("exit_date", "DATE"), ("exit", "FLOAT64"),
     ("exit_reason", "STRING"), ("r_mult", "FLOAT64"), ("ret_pct", "FLOAT64"), ("hold_days", "INT64"),
     ("mfe_r", "FLOAT64"), ("loaded_at", "TIMESTAMP"),
+    # 検証用ページのチャートに重ねるため(minervini_screen と同じ形)
+    ("final_low", "FLOAT64"), ("base_start", "DATE"), ("zigzag", "STRING"), ("dry_from", "DATE"), ("dry_to", "DATE"),
+    ("breakeven_date", "DATE"),
 ]
 
 TABLES = {
