@@ -169,7 +169,7 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
    prices           ... 株価(チャート用。選んだ銘柄だけ読む) */
 const BQ = "Google Cloud BigQuery", PROJECT = "jp-sector-flow", DATASET = "sector_flow";
 // しきい値は src/minervini.py 冒頭の定数と同じ値(表示用)。向こうを変えたらここも合わせる
-const P = {MIN_ABOVE_LOW: 0.30, MAX_BELOW_HIGH: 0.25, MIN_RS: 70, MIN_BASE_DAYS: 15, ZZ_MIN_PCT: 0.03, ZZ_ATR_MULT: 1.5,
+const P = {MIN_ABOVE_LOW: 0.30, MAX_BELOW_HIGH: 0.25, MIN_RS: 70, MIN_BASE_DAYS: 15, ZZ_MIN_PCT: 0.05, ZZ_ATR_MULT: 2.5,
   MIN_CONTRACTIONS: 2, MAX_CONTRACTIONS: 6, MAX_FIRST_DEPTH: 0.35, MAX_FINAL_DEPTH: 0.10, FINAL_VS_FIRST: 0.5,
   DRYUP_DAYS: 10, MAX_DRYUP_RATIO: 0.85};
 const D = {as_of: null, dates: [], near: []};
@@ -309,7 +309,7 @@ function vcpChecks(x) {
   if (!d.length) return items;
   items.push([`最初の収縮 ${P.MAX_FIRST_DEPTH * 100}%以内`, d[0] <= P.MAX_FIRST_DEPTH + 0.005, pct(d[0])]);
   items.push([`最後の収縮 ${P.MAX_FINAL_DEPTH * 100}%以内`, !x.reasons.includes("最後の収縮が深い"), pct(d[d.length - 1])]);
-  items.push(["だんだん浅くなる", !x.reasons.includes("収縮が浅くなっていない"), x.depths]);
+  items.push(["最後の収縮が最も浅い", !x.reasons.includes("最後の収縮が最も浅くない") && !x.reasons.includes("収縮が浅くなっていない"), x.depths]);
   items.push([`最後 ≤ 最初の${P.FINAL_VS_FIRST * 100}%`, !x.reasons.includes("収縮の縮み不足"), d.length > 1 ? `${fx(d[d.length - 1] / d[0] * 100, 0)}%` : "-"]);
   items.push([`直近${P.DRYUP_DAYS}日の出来高 ≤ 50日平均の${P.MAX_DRYUP_RATIO * 100}%`, !x.reasons.includes("出来高が細っていない"), x.dryup == null ? "-" : `${fx(x.dryup * 100, 0)}%`]);
   return items;

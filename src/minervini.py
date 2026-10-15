@@ -20,8 +20,9 @@
        ・ベースの起点 = 直近 BASE_LOOKBACK 日(最後の BREAKOUT_LOOKBACK 日を除く)の最高値
        ・起点から今日までを ZigZag で高値・安値に分け、高値→次の安値の下落率を「収縮」とする。
          ZigZag の反転幅は銘柄の ATR に比例させる(値動きの荒い銘柄で小さな揺れを収縮と数えないため)
-       ・収縮が MIN_CONTRACTIONS〜MAX_CONTRACTIONS 回、だんだん浅くなり、最初が MAX_FIRST_DEPTH 以内、
-         最後が MAX_FINAL_DEPTH 以内、直近の出来高が50日平均より細っていれば VCP とみなす
+       ・収縮が MIN_CONTRACTIONS〜MAX_CONTRACTIONS 回、最初が MAX_FIRST_DEPTH 以内、最後が MAX_FINAL_DEPTH 以内で
+         ベースの中で最も浅く(途中で一度深くなってもよい)、最初の FINAL_VS_FIRST 倍以下、
+         直近の出来高が50日平均より細っていれば VCP とみなす
        ・ピボット = 最後の収縮の起点の高値。終値がこれを出来高を伴って上抜けたら買い
   3. 損切り(銘柄ごとのボラティリティを加味)
        ・構造上の損切り = 最後の収縮の安値 − STOP_ATR_BUFFER × ATR
@@ -67,13 +68,16 @@ ATR_DAYS = 20
 BASE_LOOKBACK = 130        # ベースの起点を探す範囲(約6か月)
 BREAKOUT_LOOKBACK = 5      # 起点探しから除く直近の日数(ブレイクした日が起点にならないように)
 MIN_BASE_DAYS = 15         # ベースの最短期間(約3週間)
-ZZ_MIN_PCT = 0.03          # ZigZag の反転幅の下限
-ZZ_ATR_MULT = 1.5          # ZigZag の反転幅 = max(ZZ_MIN_PCT, ZZ_ATR_MULT × ATR%)
+ZZ_MIN_PCT = 0.05          # ZigZag の反転幅の下限
+ZZ_ATR_MULT = 2.5          # ZigZag の反転幅 = max(ZZ_MIN_PCT, ZZ_ATR_MULT × ATR%)。大きな収縮だけを数えるため粗めにする
+ZZ_FINE_MIN_PCT = 0.03     # 最後の大きな転換点より後(最後の収縮のあたり)だけは、細かい反転幅で見る
+ZZ_FINE_ATR_MULT = 1.5
 MIN_CONTRACTIONS = 2
 MAX_CONTRACTIONS = 6
 MAX_FIRST_DEPTH = 0.35     # 最初の収縮の深さの上限
 MAX_FINAL_DEPTH = 0.10     # 最後の収縮の深さの上限(タイトな値動き)
-CONTRACTION_TOL = 1.10     # 各収縮は直前の収縮の何倍まで許すか(ほぼ同じ深さの揺れは許容)
+FINAL_TOL = 1.10           # 最後の収縮は、それまでの収縮で最も浅いもののこの倍率以下(ほぼ同じ深さは許容)。
+                           # 途中で一度深くなっても、最後が最もタイトなら可
 FINAL_VS_FIRST = 0.5       # 最後の収縮は最初の収縮のこの倍率以下
 VOL_AVG_DAYS = 50
 DRYUP_DAYS = 10            # 出来高の細りを見る直近日数
@@ -168,14 +172,17 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = ATR_DAYS) ->
     return tr.rolling(n, min_periods=max(5, n // 2)).mean()
 
 
-def zigzag(high: np.ndarray, low: np.ndarray, th: float) -> list[tuple[str, int, float]]:
-    """先頭(高値)から始まる ZigZag。確定した転換点 ('H'/'L', 位置, 値) の列を返す。
+def zigzag(high: np.ndarray, low: np.ndarray, th: float, first: str = "H") -> list[tuple[str, int, float]]:
+    """先頭から始まる ZigZag。確定した転換点 ('H'/'L', 位置, 値) の列を返す。
 
-    先頭は必ず高値の転換点(ベースの起点)。最後に、まだ確定していない進行中の極値を付ける。
+    先頭は first で指定した種類の転換点(既定は高値 = ベースの起点)。最後に、まだ確定していない進行中の極値を付ける。
     """
-    pts = [("H", 0, high[0])]
-    mode = "down"                     # 起点の高値から下落を追う
-    ext_i, ext_v = 0, low[0]
+    if first == "H":
+        pts = [("H", 0, high[0])]
+        mode, ext_i, ext_v = "down", 0, low[0]    # 起点の高値から下落を追う
+    else:
+        pts = [("L", 0, low[0])]
+        mode, ext_i, ext_v = "up", 0, high[0]     # 起点の安値から上昇を追う
     for i in range(1, len(high)):
         if mode == "down":
             if low[i] < ext_v:
@@ -220,8 +227,13 @@ def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Ser
     if base_days < MIN_BASE_DAYS:
         return Vcp(reason="ベースが短い", base_days=base_days, start=start)
 
+    # 大きな収縮は粗い ZigZag で数え、最後の大きな転換点より後だけを細かい ZigZag で見直す
+    # (最後のタイトな収縮は粗い反転幅より浅いことが多く、戻した後だと粗い方では拾えないため)
     th = max(ZZ_MIN_PCT, ZZ_ATR_MULT * atr_pct)
-    pts = zigzag(h[start:], l[start:], th)
+    coarse = zigzag(h[start:], l[start:], th)[:-1]
+    k0 = coarse[-1][1]
+    fine = zigzag(h[start + k0:], l[start + k0:], max(ZZ_FINE_MIN_PCT, ZZ_FINE_ATR_MULT * atr_pct), first=coarse[-1][0])
+    pts = coarse[:-1] + [(t, k0 + i, val) for t, i, val in fine]
     confirmed, last = pts[:-1], pts[-1]
     # 高値→安値 の組を収縮とする。最後が「確定した高値+進行中の安値」なら、それも収縮に数える
     seq = confirmed + ([last] if last[0] == "L" else [])
@@ -252,8 +264,8 @@ def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Ser
         reasons.append("最初の収縮が深い")
     if depths[-1] > MAX_FINAL_DEPTH:
         reasons.append("最後の収縮が深い")
-    if any(depths[k] > depths[k - 1] * CONTRACTION_TOL for k in range(1, len(depths))):
-        reasons.append("収縮が浅くなっていない")
+    if len(depths) >= 2 and depths[-1] > min(depths[:-1]) * FINAL_TOL:
+        reasons.append("最後の収縮が最も浅くない")
     if len(depths) >= 2 and depths[-1] > depths[0] * FINAL_VS_FIRST:
         reasons.append("収縮の縮み不足")
     if not (v.dryup <= MAX_DRYUP_RATIO):
