@@ -242,13 +242,14 @@ def summarize(trades: pd.DataFrame) -> None:
             "件数": len(g), "勝率%": len(win) / len(g) * 100 if len(g) else np.nan,
             "平均R": g["r_mult"].mean(), "勝ち平均R": win["r_mult"].mean(), "負け平均R": loss["r_mult"].mean(),
             "PF": win["r_mult"].sum() / gross_loss if gross_loss > 0 else np.nan,
+            "ペイオフ": win["r_mult"].mean() / -loss["r_mult"].mean() if len(win) and len(loss) else np.nan,
             "合計R": g["r_mult"].sum(), "平均騰落%": g["ret_pct"].mean(), "平均保有日": g["hold_days"].mean(),
             "損切り幅%": g["risk_pct"].mean(),
         })
 
     fmt = {"display.width": 220, "display.max_columns": 30, "display.float_format": lambda x: f"{x:,.2f}"}
     with pd.option_context(*[x for kv in fmt.items() for x in kv]):
-        print("\n=== 損切り幅の下限ごと(シグナル全期間) ===")
+        print("\n=== 売買ルールごと(シグナル全期間) ===")
         print(t.groupby("variant").apply(stats, include_groups=False).to_string())
         print("\n=== 年別 ===")
         print(t.groupby(["variant", "year"]).apply(stats, include_groups=False).to_string())

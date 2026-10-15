@@ -28,10 +28,19 @@
 - 合成データでの確認: 上昇 → 収縮が浅くなるベース → ブレイク の系列を作り `screen()` / `detect_vcp()` を呼ぶ(テストファイルはリポジトリにない)
 - 判定を変えたら、`minervini-screen` を動かして `minervini_screen` の件数・理由の内訳をコネクタで確かめ、気になる銘柄は検証ページのチャートで見る
 
+## バックテスト(src/minervini_backtest.py)
+
+- `minervini-backtest` ワークフローで動かす(作業ブランチに `src/minervini_backtest.py` かワークフロー自身の変更を push しても動く)。全体で1分弱(株価の読み込みは BigQuery Storage API で数秒)
+- 結果は `minervini_backtest` を全置換。成績はジョブのログ(`get_job_logs`)か、コネクタで `minervini_backtest` を集計して見る
+- 売買ルールは `VARIANTS`。ルールを足したら、`artifact/minervini.html` の `VLABEL` / `VNOTE` と README の表も合わせる
+- 判定の関数(`detect_vcp` など)は daily の `src/minervini.py` と共通。全営業日のトレンドテンプレートは `trend_template_panel`(daily の `trend_template` と一致することを実行時に確かめている)
+
 ## 検証用ページ(artifact/minervini.html)
 
 - Claude のアーティファクト https://claude.ai/artifact/2rRdaecUy6vdJw6ziDaMji(非公開)。このファイルをそのまま公開する(埋め込むデータはない)
-- `mcp` capability で、閲覧者の Google Cloud BigQuery コネクタ(`execute_sql_readonly`, `get_query_results`)を使って `minervini_screen` と `prices` を読む。再公開時は capabilities を省略すると引き継がれる
+- `mcp` capability で、閲覧者の Google Cloud BigQuery コネクタ(`execute_sql_readonly`, `get_query_results`)を使って `minervini_screen`・`minervini_backtest`・`prices` を読む。再公開時は capabilities を省略すると引き継がれる
+- 「日々のスクリーニング」と「バックテスト」の2つの表示がある。バックテストは件数が多いので、ルールごとに一覧の列だけを読み、選んだトレードの詳細は後から読む
+- 動作確認は、`window.claude.use("mcp")` を差し替える模擬スクリプトを Playwright の `add_init_script` で入れ、`page.route` で配信したページを開いて行う(`set_content` では差し替えが効かない)
 - 業種ダッシュボードの共有版は別物: `artifact/snapshot.template.html` + `artifact/build.py`(データは孤立ブランチ `snapshot` の JSON を埋め込む)
 
 ## 作業の進め方

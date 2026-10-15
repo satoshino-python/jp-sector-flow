@@ -757,15 +757,20 @@ async function loadVariant(v) {
 }
 function btStats(v) {
   const r = (BT.stats || {})[v] || {};
+  const nloss = (r.n || 0) - (r.nwin || 0);
   return {n: r.n || 0, skip: r.skip || 0, busy: r.busy || 0, win: r.n ? r.nwin / r.n * 100 : null, avg: r.avg,
-    total: r.total, pf: r.gloss > 0 ? r.gwin / r.gloss : null, period: r.period};
+    total: r.total, pf: r.gloss > 0 ? r.gwin / r.gloss : null, period: r.period,
+    // ペイオフレシオ = 勝ちトレードの平均利益 ÷ 負けトレードの平均損失(R)
+    payoff: r.nwin && nloss && r.gloss > 0 ? (r.gwin / r.nwin) / (r.gloss / nloss) : null};
 }
 function renderBT() {
   if (!BT.loaded) return;
   const all = BT.rows, st = btStats(BT.variant);
   const tile = (lab, val) => h("div", {class: "stat"}, h("span", null, lab), h("b", null, val));
   $("#bt-stats").replaceChildren(tile("売買", st.n + "件"), tile("勝率", st.win == null ? "-" : fx(st.win, 0) + "%"),
-    tile("平均", fr(st.avg)), tile("合計", fr(st.total)), tile("PF", st.pf == null ? "-" : fx(st.pf, 2)), tile("見送り", st.skip + "件"));
+    tile("平均", fr(st.avg)), tile("合計", fr(st.total)), tile("PF", st.pf == null ? "-" : fx(st.pf, 2)),
+    tile("ペイオフレシオ", st.payoff == null ? "-" : fx(st.payoff, 2)), tile("損益ゼロの勝率", st.payoff == null ? "-" : fx(100 / (1 + st.payoff), 0) + "%"),
+    tile("見送り", st.skip + "件"));
   if (st.busy) $("#bt-stats").append(h("p", {class: "note", style: "grid-column:1/-1;margin:0"}, `ほかに、同じ銘柄を保有中だったため見送ったシグナルが ${st.busy} 件あります(一覧には出しません)。`));
   document.querySelectorAll("#bt-result button").forEach(b => b.setAttribute("aria-pressed", b.dataset.r === BT.result ? "true" : "false"));
   $("#bt-note").textContent = (VNOTE[BT.variant] || "") + (BT.result === "trade"
