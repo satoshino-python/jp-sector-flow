@@ -3,15 +3,18 @@
 使い方(BigQuery の株価を使うので、認証のある GitHub Actions の minervini-backtest で動かす):
     python src/minervini_backtest.py --start 2021-01-01 --end 2025-12-31 --save
 
-売買のルール:
-  シグナル ... その日にトレンドテンプレートを満たし、VCP と判定され、終値が出来高を伴ってピボットを
-              初めて上抜けた(minervini.py の状態が「ブレイク」)日。判定は daily の screen と同じ関数を使う
+売買のルール(VARIANTS の3通りを比べる):
+  シグナル ... その日にトレンドテンプレートを満たし、
+                vcp_pivot       ... VCP と判定され、終値が出来高を伴ってピボットを初めて上抜けた(daily の「ブレイク」)日
+                high52_8pct     ... 終値が前日までの52週高値を初めて上抜けた日
+                vcp_high52_8pct ... 上の52週高値抜けのうち、その日に VCP と判定されたもの
+              判定は daily の screen と同じ関数を使う
   買い     ... シグナルの翌営業日の始値。次の場合は見送る:
-                翌日の始値が損切り以下(下に窓を開けた)/ ピボットから MAX_CHASE 超上(伸びすぎ)/
+                翌日の始値が損切り以下(下に窓を開けた)/ ピボット(52週高値)から MAX_CHASE 超上(伸びすぎ)/
                 損切り幅が MAX_RISK_PCT 超(リスク過大)/ その銘柄を保有中
-  損切り   ... シグナル日に plan_trade で決めた価格(最後の収縮の安値 − 0.5ATR と 終値 − k×ATR の遠い方)。
-              k(損切り幅の下限)を STOP_VARIANTS の値で比べる。安値が損切りに触れたら損切り価格で売る
-              (始値が損切りより下なら始値で売る)
+  損切り   ... vcp_pivot: シグナル日に plan_trade で決めた価格(最後の収縮の安値 − 0.5ATR と 終値 − 1.5ATR の遠い方)
+              52週高値の2つ: 買値の8%下
+              安値が損切りに触れたら損切り価格で売る(始値が損切りより下なら始値で売る)
   建値へ   ... 高値が 買値 + BREAKEVEN_R × R に達したら、翌日から損切りを買値に上げる
   利益確定 ... 終値が50日線を割ったら、翌営業日の始値で売る
   R        ... 買値 − 当初の損切り。成績は R の倍数(損益 ÷ R)と騰落率で見る
@@ -45,7 +48,13 @@ def log(msg: str) -> None:
     print(f"[{time.time() - T0:6.1f}秒] {msg}", flush=True)
 
 
-STOP_VARIANTS = [1.0, 1.5, 2.0]   # 損切り幅の下限(ATR の倍数)。daily の設定は mv.STOP_ATR_MIN
+# 比べる売買ルール: (variant, シグナルのルール, 損切り)。損切りは ("atr", 損切り幅の下限) か ("pct", 買値からの割合)
+# (以前は ATR の下限 1.0/1.5/2.0 を比べたが、損切りは全件で収縮の安値の方が遠く、結果が同じだったので 1.5 だけ残す)
+VARIANTS = [
+    ("vcp_pivot", "vcp_pivot", ("atr", mv.STOP_ATR_MIN)),
+    ("high52_8pct", "high52", ("pct", 0.08)),
+    ("vcp_high52_8pct", "vcp_high52", ("pct", 0.08)),
+]
 WARMUP_DAYS = 420                 # 指標の計算に使う、開始日より前の暦日数(200日線・52週・12か月RS)
 SLICE = 260                       # detect_vcp に渡す直近の営業日数(ベース130日 + 出来高の平均 + ATR に足りる)
 
@@ -78,8 +87,9 @@ class Stock:
         self.v = p["volume"][code].reindex(idx)
         self.atr = mv.atr(self.h, self.l, self.c)
         self.ma50 = cl.rolling(50).mean()
+        self.hi52p = self.h.rolling(mv.WEEKS52).max().shift(1)     # 前日までの52週高値
         # 売買の再現は numpy で速く回す
-        self.na = {k: getattr(self, k).to_numpy(float) for k in ["o", "h", "l", "c", "ma50"]}
+        self.na = {k: getattr(self, k).to_numpy(float) for k in ["o", "h", "l", "c", "ma50", "hi52p"]}
 
     def pos(self, d: pd.Timestamp) -> int:
         """日付 d の位置(その日に取引がなければ -1)。"""
@@ -88,7 +98,13 @@ class Stock:
 
 
 def find_signals(p, panel, stocks: dict[str, Stock], start, end) -> pd.DataFrame:
-    """期間中の「ブレイク」シグナルを全部集める。"""
+    """期間中のシグナルを、ルールごとに集める(rule 列)。
+
+      vcp_pivot  ... VCP と判定され、終値が出来高を伴ってピボットを初めて上抜けた(daily の「ブレイク」)
+      high52     ... 終値が前日までの52週高値(直近252営業日の高値)を初めて上抜けた
+      vcp_high52 ... high52 のうち、その日に VCP と判定されたもの
+    どのルールも、その日にトレンドテンプレートを満たしていることが前提。
+    """
     tt = panel["tt_pass"]
     days = tt.index[(tt.index >= start) & (tt.index <= end)]
     rows, n_checked, t0 = [], 0, time.time()
@@ -98,50 +114,67 @@ def find_signals(p, panel, stocks: dict[str, Stock], start, end) -> pd.DataFrame
             i = s.pos(d)
             if i < mv.BASE_LOOKBACK or not np.isfinite(s.na["c"][i]):
                 continue
-            # 前日の終値がピボット以下で、当日上抜けた日だけがシグナルになる。
-            # 当日の終値が前日以下なら、ピボットを新たに上抜けることはないので判定を省く
-            if i > 0 and s.na["c"][i] <= s.na["c"][i - 1]:
+            c = s.na["c"]
+            # どのルールも「当日の終値が前日より上」でないと起きない(前日の終値は前日までの高値・ピボット以下)ので判定を省く
+            if c[i] <= c[i - 1]:
                 continue
+            hp = s.na["hi52p"]
+            is52 = np.isfinite(hp[i]) and c[i] > hp[i] and np.isfinite(hp[i - 1]) and c[i - 1] <= hp[i - 1]
             a, b = max(0, i + 1 - SLICE), i + 1
             hi, lo, cl, vo = s.h.iloc[a:b], s.l.iloc[a:b], s.c.iloc[a:b], s.v.iloc[a:b]
             atr_v = s.atr.iloc[i]
             n_checked += 1
             v = mv.detect_vcp(hi, lo, cl, vo, atr_v / cl.iloc[-1])
-            if not v.ok:
-                continue
-            status, vr, _ = mv.entry_status(v, cl, vo)
-            if status != "ブレイク":
-                continue
-            day = lambda k: s.dates[a + k].strftime("%Y-%m-%d")   # noqa: E731  slice 内の位置 → 日付
-            rows.append({"code": code, "signal_date": d, "i": i, "pivot": v.pivot, "final_low": v.final_low,
-                         # 検証用ページでチャートに重ねるための位置(日付)。daily の minervini_screen と同じ形
-                         "base_start": day(v.start),
-                         "zigzag": json.dumps([[t, day(k), round(float(val), 2)] for t, k, val in v.points]),
-                         "dry_from": day(max(v.dry_end - mv.DRYUP_DAYS, 0)), "dry_to": day(v.dry_end - 1),
-                         "atr": atr_v, "atr_pct": atr_v / cl.iloc[-1] * 100, "close": cl.iloc[-1],
-                         "breakout_vol": vr, "depths": " → ".join(f"{x * 100:.0f}%" for x in v.depths),
-                         "n_contractions": len(v.depths), "base_days": v.base_days, "dryup": v.dryup,
-                         "rs": float(panel["rs"].at[d, code]), "vcp_obj": v})
-    log(f"シグナル探索: {len(days)}営業日、VCP判定 {n_checked:,}回、ブレイク {len(rows)}件 ({time.time() - t0:.0f}秒)")
-    return pd.DataFrame(rows)
+            status, vr = None, np.nan
+            if v.ok:
+                status, vr, _ = mv.entry_status(v, cl, vo)
+            vol_avg = s.v.iloc[max(0, i - 50):i].mean()
+            base = {"code": code, "signal_date": d, "i": i, "vcp_ok": v.ok,
+                    "atr": atr_v, "atr_pct": atr_v / cl.iloc[-1] * 100, "close": cl.iloc[-1],
+                    "rs": float(panel["rs"].at[d, code]), "vcp_obj": v}
+            if v.ok:   # 検証用ページでチャートに重ねるための位置(日付)。daily の minervini_screen と同じ形
+                day = lambda k: s.dates[a + k].strftime("%Y-%m-%d")   # noqa: E731  slice 内の位置 → 日付
+                base.update({"final_low": v.final_low, "base_start": day(v.start),
+                             "zigzag": json.dumps([[t, day(k), round(float(val), 2)] for t, k, val in v.points]),
+                             "dry_from": day(max(v.dry_end - mv.DRYUP_DAYS, 0)), "dry_to": day(v.dry_end - 1),
+                             "depths": " → ".join(f"{x * 100:.0f}%" for x in v.depths),
+                             "n_contractions": len(v.depths), "base_days": v.base_days, "dryup": v.dryup})
+            if v.ok and status == "ブレイク":
+                rows.append({**base, "rule": "vcp_pivot", "level": v.pivot, "breakout_vol": vr})
+            if is52:
+                vr52 = s.v.iloc[i] / vol_avg if vol_avg and vol_avg > 0 else np.nan
+                rows.append({**base, "rule": "high52", "level": hp[i], "breakout_vol": vr52})
+                if v.ok:
+                    rows.append({**base, "rule": "vcp_high52", "level": hp[i], "breakout_vol": vr52})
+    df = pd.DataFrame(rows)
+    counts = df["rule"].value_counts().to_dict() if len(df) else {}
+    log(f"シグナル探索: {len(days)}営業日、VCP判定 {n_checked:,}回、シグナル {counts} ({time.time() - t0:.0f}秒)")
+    return df
 
 
-def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], k: float) -> pd.DataFrame:
-    """損切り幅の下限 k×ATR で、シグナルを順に売買する。見送ったシグナルも理由付きで返す。"""
+def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], variant: str, rule: str, stop: tuple) -> pd.DataFrame:
+    """rule のシグナルを順に売買する。見送ったシグナルも理由付きで返す。
+
+    stop ... ("atr", k): plan_trade の損切り(最後の収縮の安値 − 0.5ATR と 終値 − k×ATR の遠い方。シグナル日に決める)
+             ("pct", x): 買値の x 下(買った日に決める)
+    """
     out = []
     busy_until: dict[str, int] = {}          # 銘柄ごとに、保有中のトレードの手仕舞い位置
-    for r in sig.sort_values("signal_date").itertuples():
+    for r in sig[sig["rule"] == rule].sort_values("signal_date").itertuples():
         s = stocks[r.code]
         a = s.na
         i = r.i
-        plan = mv.plan_trade(r.vcp_obj, r.close, r.atr, True, None, stop_atr_min=k)
-        stop0 = plan["stop"]
-        rec = {"variant": f"stop{k}", "code": r.code, "signal_date": r.signal_date.date(), "pivot": r.pivot,
-               "final_low": r.final_low, "base_start": r.base_start, "zigzag": r.zigzag,
-               "dry_from": r.dry_from, "dry_to": r.dry_to,
-               "stop": stop0, "stop_basis": plan["stop_basis"], "atr_pct": r.atr_pct, "rs": r.rs,
-               "depths": r.depths, "n_contractions": r.n_contractions, "base_days": r.base_days,
-               "dryup": r.dryup, "breakout_vol": r.breakout_vol}
+        if stop[0] == "atr":
+            plan = mv.plan_trade(r.vcp_obj, r.close, r.atr, True, None, stop_atr_min=stop[1])
+            stop0, basis = plan["stop"], plan["stop_basis"]
+        else:
+            stop0, basis = None, f"買値の{stop[1] * 100:.0f}%下"
+        rec = {"variant": variant, "rule": rule, "code": r.code, "signal_date": r.signal_date.date(), "pivot": r.level,
+               "vcp_ok": bool(r.vcp_ok), "stop": stop0, "stop_basis": basis, "atr_pct": r.atr_pct, "rs": r.rs,
+               "breakout_vol": r.breakout_vol}
+        for k in ["final_low", "base_start", "zigzag", "dry_from", "dry_to", "depths", "n_contractions", "base_days", "dryup"]:
+            val = getattr(r, k, None)
+            rec[k] = None if val is None or (isinstance(val, float) and np.isnan(val)) else val
         if r.code in busy_until and busy_until[r.code] >= i:
             out.append({**rec, "result": "見送り: 保有中"})
             continue
@@ -150,10 +183,13 @@ def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], k: float) -> pd.DataFr
             continue
         e = i + 1
         entry = a["o"][e]
+        if stop0 is None:
+            stop0 = entry * (1 - stop[1])
+            rec["stop"] = stop0
         if not np.isfinite(entry) or entry <= stop0:
             out.append({**rec, "entry": entry, "result": "見送り: 翌日始値が損切り以下"})
             continue
-        if entry > r.pivot * (1 + mv.MAX_CHASE):
+        if entry > r.level * (1 + mv.MAX_CHASE):
             out.append({**rec, "entry": entry, "result": "見送り: 伸びすぎ"})
             continue
         risk = entry - stop0
@@ -161,21 +197,21 @@ def simulate(sig: pd.DataFrame, stocks: dict[str, Stock], k: float) -> pd.DataFr
             out.append({**rec, "entry": entry, "result": "見送り: リスク過大"})
             continue
 
-        stop, be_done, mfe, be_i = stop0, False, entry, None
+        stop_px, be_done, mfe, be_i = stop0, False, entry, None
         exit_i, exit_px, reason = None, None, None
         j = e
         n = len(a["o"])
         while j < n:
             o, h, lo, c = a["o"][j], a["h"][j], a["l"][j], a["c"][j]
-            if j > e and o <= stop:                       # 窓を開けて損切りより下で始まった
+            if j > e and o <= stop_px:                       # 窓を開けて損切りより下で始まった
                 exit_i, exit_px, reason = j, o, "建値ストップ" if be_done else "損切り"
                 break
-            if lo <= stop:
-                exit_i, exit_px, reason = j, stop, "建値ストップ" if be_done else "損切り"
+            if lo <= stop_px:
+                exit_i, exit_px, reason = j, stop_px, "建値ストップ" if be_done else "損切り"
                 break
             mfe = max(mfe, h)
             if not be_done and h >= entry + mv.BREAKEVEN_R * risk:   # 翌日から損切りを買値へ
-                stop, be_done, be_i = max(stop, entry), True, j + 1
+                stop_px, be_done, be_i = max(stop_px, entry), True, j + 1
             if np.isfinite(a["ma50"][j]) and c < a["ma50"][j]:      # 50日線割れ → 翌日の始値で売る
                 if j + 1 < n:
                     exit_i, exit_px, reason = j + 1, a["o"][j + 1], "50日線割れ"
@@ -238,6 +274,8 @@ def save(trades: pd.DataFrame, start, end) -> None:
             df[n] = pd.to_numeric(df[n], errors="coerce").round().astype("Int64")
         elif t == "FLOAT64":
             df[n] = pd.to_numeric(df[n], errors="coerce").astype("float64")
+        elif t == "BOOL":
+            df[n] = df[n].astype(object).where(df[n].notna(), None).map(lambda v: None if v is None else bool(v))
         elif t == "STRING":
             df[n] = df[n].astype(object).where(df[n].notna(), None)
     client = bq_io.get_client()
@@ -277,7 +315,7 @@ def main() -> int:
     if sig.empty:
         print("シグナルがありません")
         return 0
-    trades = pd.concat([simulate(sig, stocks, k) for k in STOP_VARIANTS], ignore_index=True)
+    trades = pd.concat([simulate(sig, stocks, v, rule, stop) for v, rule, stop in VARIANTS], ignore_index=True)
     trades = trades.join(stocks_u[["name", "sector"]], on="code")
     log("売買の再現")
     summarize(trades)

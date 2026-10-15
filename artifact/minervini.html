@@ -175,7 +175,7 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
     <section class="panel" aria-label="バックテストのトレード">
       <div class="stats" id="bt-stats"></div>
       <div class="filters">
-        <label for="bt-variant">損切り幅の下限 <select id="bt-variant"></select></label>
+        <label for="bt-variant">売買ルール <select id="bt-variant"></select></label>
         <div class="seg" id="bt-result" role="group" aria-label="表示するシグナル">
           <button type="button" data-r="trade" aria-pressed="true">売買</button>
           <button type="button" data-r="skip" aria-pressed="false">見送り</button>
@@ -699,7 +699,15 @@ async function loadPrices(x) {
 }
 
 /* ---------- バックテスト(minervini_backtest) ---------- */
-const BT = {rows: [], loaded: false, loading: false, variant: "stop1.5", result: "trade", sort: "date", key: null, px: {}, review: {}};
+// 売買ルール(src/minervini_backtest.py の VARIANTS)。古い結果(stop1.0 など)は名前をそのまま出す
+const VLABEL = {vcp_pivot: "VCPのピボット抜け・損切りは収縮の安値", high52_8pct: "52週高値抜け・損切り8%", vcp_high52_8pct: "VCP＋52週高値抜け・損切り8%"};
+const VNOTE = {
+  vcp_pivot: "シグナルは、トレンドテンプレートを満たし、VCPと判定され、終値が出来高を伴ってピボットを初めて上抜けた日。損切りは最後の収縮の安値−0.5ATR(と買値−1.5ATRの遠い方)。",
+  high52_8pct: "シグナルは、トレンドテンプレートを満たし、終値が前日までの52週高値を初めて上抜けた日(VCPは問わない)。損切りは買値の8%下。",
+  vcp_high52_8pct: "シグナルは、52週高値抜けのうち、その日にVCPと判定されたもの。損切りは買値の8%下。",
+};
+const isHigh52 = x => (x.rule || "").includes("high52");
+const BT = {rows: [], loaded: false, loading: false, variant: "high52_8pct", result: "trade", sort: "date", key: null, px: {}, review: {}};
 try { BT.review = JSON.parse(localStorage.getItem("minervini-review-bt") || "{}") || {}; } catch (e) { BT.review = {}; }
 function saveBtReview() { try { localStorage.setItem("minervini-review-bt", JSON.stringify(BT.review)); } catch (e) { /* 無視 */ } }
 const btKey = x => `${x.variant}|${x.code}|${x.signal_date}`;
@@ -715,7 +723,7 @@ async function loadBT() {
     BT.loaded = true;
     const vs = [...new Set(BT.rows.map(r => r.variant))].sort();
     if (!vs.includes(BT.variant)) BT.variant = vs[0];
-    $("#bt-variant").replaceChildren(...vs.map(v => h("option", {value: v, selected: v === BT.variant}, v.replace("stop", "") + " ATR")));
+    $("#bt-variant").replaceChildren(...vs.map(v => h("option", {value: v, selected: v === BT.variant}, VLABEL[v] || v)));
     banner(null);
     renderBT();
   } catch (e) {
@@ -740,9 +748,9 @@ function renderBT() {
   $("#bt-stats").replaceChildren(tile("売買", st.n + "件"), tile("勝率", st.win == null ? "-" : fx(st.win, 0) + "%"),
     tile("平均", fr(st.avg)), tile("合計", fr(st.total)), tile("PF", st.pf == null ? "-" : fx(st.pf, 2)), tile("見送り", st.skip + "件"));
   document.querySelectorAll("#bt-result button").forEach(b => b.setAttribute("aria-pressed", b.dataset.r === BT.result ? "true" : "false"));
-  $("#bt-note").textContent = (BT.result === "trade"
-    ? "ブレイクの翌日始値で買い、終値が50日線を割った翌日始値で売ります(損切り、2Rで建値へ)。"
-    : "シグナルは出たが買わなかったもの。理由を確かめられます。") + (st.period ? ` シグナルの期間 ${st.period}。` : "");
+  $("#bt-note").textContent = (VNOTE[BT.variant] || "") + (BT.result === "trade"
+    ? " シグナルの翌日始値で買い、終値が50日線を割った翌日始値で売ります(2Rで損切りを買値へ)。"
+    : " シグナルは出たが買わなかったもの。理由を確かめられます。") + (st.period ? ` シグナルの期間 ${st.period}。` : "");
   let list = all.filter(x => BT.result === "trade" ? x.result === "売買" : x.result !== "売買");
   list = BT.sort === "r" && BT.result === "trade" ? [...list].sort((a, b) => b.r_mult - a.r_mult) : list;
   const tb = $("#bt-list");
@@ -793,7 +801,10 @@ function buildTradeOverlay(x) {
   x.vcp = true;
   x.vlines = sig == null ? [] : [{i: sig, label: "シグナル"}];
   x.segs = [];
-  if (x.start != null && sig != null) x.segs.push({from: x.start, to: sig, v: x.pivot, col: "--pivot", label: "ピボット"});
+  if (sig != null) {
+    if (isHigh52(x)) x.segs.push({from: Math.max(0, sig - 60), to: sig, v: x.pivot, col: "--pivot", label: "52週高値"});
+    else if (x.start != null) x.segs.push({from: x.start, to: sig, v: x.pivot, col: "--pivot", label: "ピボット"});
+  }
   if (x.result === "売買" && ent != null && ext != null) {
     const stopEnd = be != null ? be - 1 : ext;
     x.segs.push({from: ent, to: stopEnd, v: x.stop, col: "--stop", dash: "6 4", label: "損切り", below: true});
@@ -826,13 +837,14 @@ function renderBTDetail(x) {
     h("div", {class: "cols"},
       h("div", {class: "card"}, h("h3", null, "エントリー条件"), h("dl", {class: "kv"},
         h("dt", null, "シグナル日"), h("dd", null, x.signal_date),
-        h("dt", null, "収縮"), h("dd", null, x.depths),
-        h("dt", null, "ベース"), h("dd", null, `${x.base_days}日`),
+        h("dt", null, "VCP"), h("dd", null, x.vcp_ok === false ? "判定されず" : "判定あり"),
+        h("dt", null, "収縮"), h("dd", null, x.depths || "-"),
+        h("dt", null, "ベース"), h("dd", null, x.base_days == null ? "-" : `${x.base_days}日`),
         h("dt", null, "出来高の細り"), h("dd", null, x.dryup == null ? "-" : `50日平均の${fx(x.dryup * 100, 0)}%`),
         h("dt", null, "ブレイク日の出来高"), h("dd", null, x.breakout_vol == null ? "-" : `50日平均の${fx(x.breakout_vol, 1)}倍`),
-        h("dt", null, "ピボット"), h("dd", null, fp(x.pivot)),
+        h("dt", null, isHigh52(x) ? "前日までの52週高値" : "ピボット"), h("dd", null, fp(x.pivot)),
         h("dt", null, "RS / ATR"), h("dd", null, `${fx(x.rs, 0)} / ${fx(x.atr_pct, 1)}%`)),
-        h("p", {class: "note"}, "シグナル日にトレンドテンプレートを満たし、VCPと判定され、終値が出来高を伴ってピボットを初めて上抜けた日です。")),
+        h("p", {class: "note"}, VNOTE[x.variant] || "")),
       h("div", {class: "card"}, h("h3", null, "売買の流れ"), h("ul", {class: "steps"},
         step("買い", traded ? `${x.entry_date}　${fp(x.entry)}(翌日始値)` : x.result),
         step("損切り", `${fp(x.stop)}(${x.stop_basis}${x.risk_pct != null ? "、−" + fx(x.risk_pct, 1) + "%" : ""})`),
@@ -859,7 +871,7 @@ function setMode(m) {
   state.mode = m;
   try { localStorage.setItem("minervini-mode", m); } catch (e) { /* 無視 */ }
   document.querySelectorAll("#mode button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false"));
-  $("#mode-note").textContent = m === "bt" ? "2021〜2025年のシグナルを、売買まで再現した結果です。" : "毎営業日のスクリーニング結果です。";
+  $("#mode-note").textContent = m === "bt" ? "2021〜2025年のシグナルを、売買まで再現した結果です。売買ルールを切り替えて比べられます。" : "毎営業日のスクリーニング結果です。";
   $("#counts").hidden = m !== "screen";
   CH = null;
   if (m === "bt") {
@@ -880,7 +892,7 @@ function reviewText() {
   const bl = [];
   for (const x of BT.rows.filter(r => r.variant === BT.variant)) { const r = BT.review[rKey(x)]; if (!r || (!r.mark && !r.memo)) continue;
     bl.push(`${x.signal_date} ${x.code} ${x.name || ""}【${x.result === "売買" ? fr(x.r_mult) + " " + x.exit_reason : x.result}】 ${({ok: "妥当", ng: "要修正", q: "保留"})[r.mark] || "-"}${r.memo ? " / " + r.memo : ""}`); }
-  if (bl.length) lines.push("", `バックテスト(損切り幅の下限 ${BT.variant})`, ...bl);
+  if (bl.length) lines.push("", `バックテスト(${VLABEL[BT.variant] || BT.variant})`, ...bl);
   return lines.length > 1 ? lines.join("\n") : "";
 }
 $("#copy").addEventListener("click", () => {

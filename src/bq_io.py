@@ -85,6 +85,8 @@ BACKTEST_SCHEMA = [
     # 検証用ページのチャートに重ねるため(minervini_screen と同じ形)
     ("final_low", "FLOAT64"), ("base_start", "DATE"), ("zigzag", "STRING"), ("dry_from", "DATE"), ("dry_to", "DATE"),
     ("breakeven_date", "DATE"),
+    # 売買ルールを比べるため(rule: vcp_pivot / high52 / vcp_high52。pivot には52週高値のルールでは前日までの52週高値が入る)
+    ("rule", "STRING"), ("vcp_ok", "BOOL"),
 ]
 
 TABLES = {
@@ -101,7 +103,7 @@ TABLES = {
                                   "テンプレートを6条件以上満たした銘柄。zigzag は [種類, 日付, 価格] のJSON"),
     "minervini_backtest": dict(schema=BACKTEST_SCHEMA, partition=None, cluster=["variant"],
                                desc="ミネルヴィニのルールのバックテスト(src/minervini_backtest.py)。シグナルごとの売買と"
-                                    "見送り。variant は損切り幅の下限(ATRの倍数)。実行のたびに全置換"),
+                                    "見送り。variant は売買ルール(シグナル + 損切り)。実行のたびに全置換"),
 }
 
 
