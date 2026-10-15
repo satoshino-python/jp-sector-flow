@@ -455,7 +455,7 @@ def save_results(df: pd.DataFrame) -> None:
     from google.cloud import bigquery
 
     client = bq_io.get_client()
-    bq_io.ensure_tables(client)
+    bq_io.ensure_tables(client, ["minervini_screen"])
     days = sorted({d.isoformat() for d in df["as_of"]})
     bq_io._run(client, f"DELETE FROM {bq_io.fqn('minervini_screen')} WHERE as_of IN UNNEST(@days)",
                [bigquery.ArrayQueryParameter("days", "DATE", days)])

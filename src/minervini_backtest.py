@@ -36,6 +36,14 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import minervini as mv  # noqa: E402
 
+T0 = time.time()
+
+
+def log(msg: str) -> None:
+    """経過時間付きで出す(どの処理に時間がかかったかをログで追えるように)。"""
+    print(f"[{time.time() - T0:6.1f}秒] {msg}", flush=True)
+
+
 STOP_VARIANTS = [1.0, 1.5, 2.0]   # 損切り幅の下限(ATR の倍数)。daily の設定は mv.STOP_ATR_MIN
 WARMUP_DAYS = 420                 # 指標の計算に使う、開始日より前の暦日数(200日線・52週・12か月RS)
 SLICE = 260                       # detect_vcp に渡す直近の営業日数(ベース130日 + 出来高の平均 + ATR に足りる)
@@ -48,10 +56,9 @@ def load_prices(start: pd.Timestamp, uni: pd.DataFrame) -> pd.DataFrame:
         raise SystemExit("Google Cloud の認証情報がありません(GOOGLE_APPLICATION_CREDENTIALS)")
     since = (start - pd.Timedelta(days=WARMUP_DAYS)).date()
     codes = uni.loc[uni["type"] == "stock", "code"].tolist()
-    t0 = time.time()
+    log("株価の読み込み開始")
     df = bq_io.read_prices(bq_io.get_client(), since, codes)
-    print(f"株価を読み込み: {len(df):,}行 {df['code'].nunique()}銘柄 {df['date'].min().date()}〜{df['date'].max().date()} "
-          f"({time.time() - t0:.0f}秒)")
+    log(f"株価を読み込み: {len(df):,}行 {df['code'].nunique()}銘柄 {df['date'].min().date()}〜{df['date'].max().date()}")
     return df
 
 
@@ -109,7 +116,7 @@ def find_signals(p, panel, stocks: dict[str, Stock], start, end) -> pd.DataFrame
                          "breakout_vol": vr, "depths": " → ".join(f"{x * 100:.0f}%" for x in v.depths),
                          "n_contractions": len(v.depths), "base_days": v.base_days, "dryup": v.dryup,
                          "rs": float(panel["rs"].at[d, code]), "vcp_obj": v})
-    print(f"シグナル探索: {len(days)}営業日、VCP判定 {n_checked:,}回、ブレイク {len(rows)}件 ({time.time() - t0:.0f}秒)")
+    log(f"シグナル探索: {len(days)}営業日、VCP判定 {n_checked:,}回、ブレイク {len(rows)}件 ({time.time() - t0:.0f}秒)")
     return pd.DataFrame(rows)
 
 
@@ -224,9 +231,9 @@ def save(trades: pd.DataFrame, start, end) -> None:
         elif t == "STRING":
             df[n] = df[n].astype(object).where(df[n].notna(), None)
     client = bq_io.get_client()
-    bq_io.ensure_tables(client)
+    bq_io.ensure_tables(client, ["minervini_backtest"])
     bq_io.replace_table(client, df, "minervini_backtest")
-    print(f"→ BigQuery minervini_backtest ({len(df)}行、全置換)")
+    log(f"→ BigQuery minervini_backtest ({len(df)}行、全置換)")
 
 
 def main() -> int:
@@ -243,6 +250,7 @@ def main() -> int:
     codes = [c for c in stocks_u.index if c in set(prices["code"])]
     p = mv.load_panels(prices, codes)
     panel = mv.trend_template_panel(p)
+    log("指標の計算")
 
     # 確認: 全営業日版のトレンドテンプレートが、daily の trend_template と同じ結果になるか(期間の最終日で)
     last = panel["tt_pass"].index[panel["tt_pass"].index <= end][-1]
@@ -253,12 +261,14 @@ def main() -> int:
     print(f"確認 {last.date()}: テンプレート通過 daily {len(a)} / 全営業日版 {len(b)} / 食い違い {len(a ^ b)}")
 
     stocks = {c: Stock(p, c) for c in codes}
+    log("銘柄ごとの系列")
     sig = find_signals(p, panel, stocks, start, end)
     if sig.empty:
         print("シグナルがありません")
         return 0
     trades = pd.concat([simulate(sig, stocks, k) for k in STOP_VARIANTS], ignore_index=True)
     trades = trades.join(stocks_u[["name", "sector"]], on="code")
+    log("売買の再現")
     summarize(trades)
     if args.save:
         save(trades, start, end)

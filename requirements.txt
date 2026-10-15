@@ -4,4 +4,5 @@ numpy>=1.24
 pyarrow>=14.0
 plotly>=5.18
 google-cloud-bigquery>=3.25
+google-cloud-bigquery-storage>=2.24
 db-dtypes>=1.2

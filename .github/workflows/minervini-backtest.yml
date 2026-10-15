@@ -37,4 +37,4 @@ jobs:
         env:
           START: ${{ inputs.start || '2021-01-01' }}
           END: ${{ inputs.end || '2025-12-31' }}
-        run: python src/minervini_backtest.py --start "$START" --end "$END" --save
+        run: python -u src/minervini_backtest.py --start "$START" --end "$END" --save

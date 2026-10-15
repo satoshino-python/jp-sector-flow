@@ -140,28 +140,47 @@ def _run(client, sql: str, params=None):
     return job
 
 
-def ensure_tables(client) -> None:
+def ensure_tables(client, tables: list[str] | None = None) -> None:
     """テーブルがなければ作り、あれば足りない列を追加する。DDLはクエリ料金がかからない。
 
     列の追加は末尾に足すだけ(既存の列は消さない・型も変えない)。新しい列は過去の行では NULL。
+    tables を渡すと、そのテーブルだけを確かめる(1テーブルにつきクエリ2回かかるため)。
     """
     for table, spec in TABLES.items():
+        if tables is not None and table not in tables:
+            continue
         _run(client, _ddl(table))
         adds = ", ".join(f"ADD COLUMN IF NOT EXISTS {n} {t}" for n, t in spec["schema"])
         _run(client, f"ALTER TABLE {fqn(table)} {adds}")
 
 
+def _to_dataframe(job) -> tuple[pd.DataFrame, str]:
+    """クエリ結果を DataFrame にする。BigQuery Storage API(並列の一括転送で速い)を使い、
+    使えなければ(ライブラリがない・権限がないなど)通常の API(ページごとに取る。行数が多いと遅い)で読む。"""
+    try:
+        from google.cloud import bigquery_storage  # noqa: F401
+        return job.to_dataframe(create_bqstorage_client=True), "Storage API"
+    except Exception as e:  # noqa: BLE001
+        print(f"BigQuery Storage API が使えないため通常の API で読みます({type(e).__name__}: {str(e)[:200]})")
+        return job.to_dataframe(create_bqstorage_client=False), "通常API"
+
+
 def read_prices(client, since, codes: list[str] | None = None) -> pd.DataFrame:
     """価格テーブルから since 以降(対象銘柄だけ)を読み出す。"""
+    import time
+
     from google.cloud import bigquery
 
     where = "date >= @since" + (" AND code IN UNNEST(@codes)" if codes else "")
     params = [bigquery.ScalarQueryParameter("since", "DATE", since)]
     if codes:
         params.append(bigquery.ArrayQueryParameter("codes", "STRING", list(codes)))
+    t0 = time.time()
     job = _run(client, f"SELECT date, code, close, adj_close, volume, turnover, open, high, low FROM {fqn('prices')} "
                        f"WHERE {where}", params)
-    df = job.to_dataframe(create_bqstorage_client=False)
+    t1 = time.time()
+    df, how = _to_dataframe(job)
+    print(f"prices の読み出し: {len(df):,}行(クエリ {t1 - t0:.0f}秒、転送 {time.time() - t1:.0f}秒、{how})", flush=True)
     if df.empty:
         return pd.DataFrame(columns=["date", "code", "close", "adj_close", "volume", "turnover", "open", "high", "low"])
     df["date"] = pd.to_datetime(df["date"])
