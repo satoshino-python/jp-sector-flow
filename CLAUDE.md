@@ -43,6 +43,13 @@
 - 動作確認は、`window.claude.use("mcp")` を差し替える模擬スクリプトを Playwright の `add_init_script` で入れ、`page.route` で配信したページを開いて行う(`set_content` では差し替えが効かない)
 - 業種ダッシュボードの共有版は別物: `artifact/snapshot.template.html` + `artifact/build.py`(データは孤立ブランチ `snapshot` の JSON を埋め込む)
 
+## 売買シミュレーション(artifact/minervini_sim.html)
+
+- Claude のアーティファクト https://claude.ai/artifact/JEMSAY8QrhXoj398ShtSP4(非公開)。検証用ページと同じく `mcp` capability で BigQuery を読む。このファイルをそのまま公開する
+- 日々の「ブレイク」(`minervini_screen`)はページの中で売買を再現する(`replayDaily` は `minervini_backtest.py` の `simulate` と同じ手順)。バックテストのシグナルは `minervini_backtest` の売買に資金の制約だけを加える
+- `simulate` 側の売買ルールや `src/minervini.py` の資金管理の定数を変えたら、ページの `P`・`replayDaily` と README も合わせる
+- 動作確認は検証用ページと同じ方法(模擬スクリプト + `page.route`)
+
 ## 作業の進め方
 
 - 作業ブランチで作業し、内容が確定したら main にマージする
