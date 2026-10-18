@@ -6,13 +6,14 @@
 売買のルール(VARIANTS の3通りを比べる):
   シグナル ... その日にトレンドテンプレートを満たし、
                 vcp_pivot       ... VCP と判定され、終値が出来高を伴ってピボットを初めて上抜けた(daily の「ブレイク」)日
+                vcp_pivot_anyvol ... 上の出来高の条件を外したもの(daily の「ブレイク(出来高不足)」の当日も含む)
                 high52_8pct     ... 終値が前日までの52週高値を初めて上抜けた日
                 vcp_high52_8pct ... 上の52週高値抜けのうち、その日に VCP と判定されたもの
               判定は daily の screen と同じ関数を使う
   買い     ... シグナルの翌営業日の始値。次の場合は見送る:
                 翌日の始値が損切り以下(下に窓を開けた)/ ピボット(52週高値)から MAX_CHASE 超上(伸びすぎ)/
                 損切り幅が MAX_RISK_PCT 超(リスク過大)/ その銘柄を保有中
-  損切り   ... vcp_pivot: シグナル日に plan_trade で決めた価格(最後の収縮の安値 − 0.5ATR と 終値 − 1.5ATR の遠い方)
+  損切り   ... vcp_pivot 系: シグナル日に plan_trade で決めた価格(最後の収縮の安値 − 0.5ATR と 終値 − 1.5ATR の遠い方)
               52週高値の2つ: 買値の8%下
               安値が損切りに触れたら損切り価格で売る(始値が損切りより下なら始値で売る)
   建値へ   ... 高値が 買値 + BREAKEVEN_R × R に達したら、翌日から損切りを買値に上げる
@@ -52,6 +53,7 @@ def log(msg: str) -> None:
 # (以前は ATR の下限 1.0/1.5/2.0 を比べたが、損切りは全件で収縮の安値の方が遠く、結果が同じだったので 1.5 だけ残す)
 VARIANTS = [
     ("vcp_pivot", "vcp_pivot", ("atr", mv.STOP_ATR_MIN)),
+    ("vcp_pivot_anyvol", "vcp_pivot_anyvol", ("atr", mv.STOP_ATR_MIN)),
     ("high52_8pct", "high52", ("pct", 0.08)),
     ("vcp_high52_8pct", "vcp_high52", ("pct", 0.08)),
 ]
@@ -101,6 +103,7 @@ def find_signals(p, panel, stocks: dict[str, Stock], start, end) -> pd.DataFrame
     """期間中のシグナルを、ルールごとに集める(rule 列)。
 
       vcp_pivot  ... VCP と判定され、終値が出来高を伴ってピボットを初めて上抜けた(daily の「ブレイク」)
+      vcp_pivot_anyvol ... 出来高を問わず、VCP と判定され、終値がピボットを初めて上抜けた(breakout_vol で出来高を見られる)
       high52     ... 終値が前日までの52週高値(直近252営業日の高値)を初めて上抜けた
       vcp_high52 ... high52 のうち、その日に VCP と判定されたもの
     どのルールも、その日にトレンドテンプレートを満たしていることが前提。
@@ -125,9 +128,9 @@ def find_signals(p, panel, stocks: dict[str, Stock], start, end) -> pd.DataFrame
             atr_v = s.atr.iloc[i]
             n_checked += 1
             v = mv.detect_vcp(hi, lo, cl, vo, atr_v / cl.iloc[-1])
-            status, vr = None, np.nan
+            status, vr, bdays = None, np.nan, -1
             if v.ok:
-                status, vr, _ = mv.entry_status(v, cl, vo)
+                status, vr, bdays = mv.entry_status(v, cl, vo)
             vol_avg = s.v.iloc[max(0, i - 50):i].mean()
             base = {"code": code, "signal_date": d, "i": i, "vcp_ok": v.ok,
                     "atr": atr_v, "atr_pct": atr_v / cl.iloc[-1] * 100, "close": cl.iloc[-1],
@@ -141,6 +144,8 @@ def find_signals(p, panel, stocks: dict[str, Stock], start, end) -> pd.DataFrame
                              "n_contractions": len(v.depths), "base_days": v.base_days, "dryup": v.dryup})
             if v.ok and status == "ブレイク":
                 rows.append({**base, "rule": "vcp_pivot", "level": v.pivot, "breakout_vol": vr})
+            if v.ok and bdays == 0 and status in ("ブレイク", "ブレイク(出来高不足)"):
+                rows.append({**base, "rule": "vcp_pivot_anyvol", "level": v.pivot, "breakout_vol": vr})
             if is52:
                 vr52 = s.v.iloc[i] / vol_avg if vol_avg and vol_avg > 0 else np.nan
                 rows.append({**base, "rule": "high52", "level": hp[i], "breakout_vol": vr52})

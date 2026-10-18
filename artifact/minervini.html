@@ -700,9 +700,10 @@ async function loadPrices(x) {
 
 /* ---------- バックテスト(minervini_backtest) ---------- */
 // 売買ルール(src/minervini_backtest.py の VARIANTS)。古い結果(stop1.0 など)は名前をそのまま出す
-const VLABEL = {vcp_pivot: "VCPのピボット抜け・損切りは収縮の安値", high52_8pct: "52週高値抜け・損切り8%", vcp_high52_8pct: "VCP＋52週高値抜け・損切り8%"};
+const VLABEL = {vcp_pivot: "VCPのピボット抜け・損切りは収縮の安値", vcp_pivot_anyvol: "VCPのピボット抜け(出来高問わず)・損切りは収縮の安値", high52_8pct: "52週高値抜け・損切り8%", vcp_high52_8pct: "VCP＋52週高値抜け・損切り8%"};
 const VNOTE = {
   vcp_pivot: "シグナルは、トレンドテンプレートを満たし、VCPと判定され、終値が出来高を伴ってピボットを初めて上抜けた日。損切りは最後の収縮の安値−0.5ATR(と買値−1.5ATRの遠い方)。",
+  vcp_pivot_anyvol: "シグナルは、トレンドテンプレートを満たし、VCPと判定され、終値がピボットを初めて上抜けた日(出来高は問わない)。損切りは最後の収縮の安値−0.5ATR(と買値−1.5ATRの遠い方)。",
   high52_8pct: "シグナルは、トレンドテンプレートを満たし、終値が前日までの52週高値を初めて上抜けた日(VCPは問わない)。損切りは買値の8%下。",
   vcp_high52_8pct: "シグナルは、52週高値抜けのうち、その日にVCPと判定されたもの。損切りは買値の8%下。",
 };

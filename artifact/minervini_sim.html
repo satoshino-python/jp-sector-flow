@@ -101,7 +101,8 @@ th.l,td.l{text-align:left}
       <label for="src" class="wide">売買するシグナル
         <select id="src">
           <option value="daily">日々のスクリーニングの「ブレイク」(実際の判定)</option>
-          <option value="vcp_pivot">バックテスト: VCPのピボット抜け(損切りは収縮の安値)</option>
+          <option value="vcp_pivot_anyvol">バックテスト: VCPのピボット抜け(出来高問わず・損切りは収縮の安値)</option>
+          <option value="vcp_pivot">バックテスト: VCPのピボット抜け(出来高あり・損切りは収縮の安値)</option>
           <option value="vcp_high52_8pct">バックテスト: VCP＋52週高値抜け(損切り8%)</option>
           <option value="high52_8pct">バックテスト: 52週高値抜け(損切り8%)</option>
         </select>
@@ -143,9 +144,16 @@ th.l,td.l{text-align:left}
       <section class="panel" aria-label="売買の一覧">
         <div class="row">
           <h2>売買の一覧</h2>
-          <div class="seg" id="tfilter" role="group" aria-label="表示する行">
-            <button type="button" data-f="trade" aria-pressed="true">売買</button>
-            <button type="button" data-f="skip" aria-pressed="false">見送り</button>
+          <div class="row" style="justify-content:flex-start">
+            <div class="seg" id="vfilter" role="group" aria-label="ブレイク日の出来高">
+              <button type="button" data-v="all" aria-pressed="true">出来高: すべて</button>
+              <button type="button" data-v="ok" aria-pressed="false">満たした</button>
+              <button type="button" data-v="weak" aria-pressed="false">不足</button>
+            </div>
+            <div class="seg" id="tfilter" role="group" aria-label="表示する行">
+              <button type="button" data-f="trade" aria-pressed="true">売買</button>
+              <button type="button" data-f="skip" aria-pressed="false">見送り</button>
+            </div>
           </div>
         </div>
         <p class="note" id="trades-note"></p>
@@ -181,22 +189,25 @@ th.l,td.l{text-align:left}
    prices             ... 株価(売買の再現・保有中の評価)と TOPIX 連動ETF(1306、比較用) */
 const BQ = "Google Cloud BigQuery", PROJECT = "jp-sector-flow", DATASET = "sector_flow";
 // src/minervini.py の定数と同じ値。向こうを変えたらここも合わせる
-const P = {MAX_CHASE: 0.05, MAX_RISK_PCT: 0.10, BREAKEVEN_R: 2.0, RISK_PER_TRADE: 0.0125, MAX_POSITION_PCT: 0.25, LOT: 100};
+const P = {BREAKOUT_VOL_RATIO: 1.4, MAX_CHASE: 0.05, MAX_RISK_PCT: 0.10, BREAKEVEN_R: 2.0, RISK_PER_TRADE: 0.0125, MAX_POSITION_PCT: 0.25, LOT: 100};
 const DEFAULTS = {src: "daily", equity: 5000000, risk: P.RISK_PER_TRADE * 100, cap: P.MAX_POSITION_PCT * 100, fee: 0.1, start: ""};
 const BENCH = "1306";
 const SRC_NOTE = {
-  daily: "src/minervini.py が毎営業日に保存している判定のうち、状態が「ブレイク」(ブレイク当日)の銘柄を買います。判定が保存され始めた日からの、実際の判定どおりの記録です。",
+  daily: "src/minervini.py が毎営業日に保存している判定のうち、ピボットを上抜けた当日の銘柄を、出来高を問わずに買います(状態が「ブレイク」と、当日の「ブレイク(出来高不足)」)。判定が保存され始めた日からの、実際の判定どおりの記録です。",
+  vcp_pivot_anyvol: "2021〜2025年のバックテスト(minervini_backtest)の売買を、元手と資金管理の条件の中で行ったときの資産です。日々の「ブレイク」と同じく、出来高を問わずに買います。",
   vcp_pivot: "2021〜2025年のバックテスト(minervini_backtest)の売買を、元手と資金管理の条件の中で行ったときの資産です。",
   vcp_high52_8pct: "2021〜2025年のバックテスト(minervini_backtest)の売買を、元手と資金管理の条件の中で行ったときの資産です。",
   high52_8pct: "2021〜2025年のバックテスト(minervini_backtest)の売買を、元手と資金管理の条件の中で行ったときの資産です。シグナルが多く、資金が足りずに見送る売買が多くなります。",
 };
 const SIGNAL = {
-  daily: "その日のスクリーニングで、トレンドテンプレートの8条件を満たし、VCP と判定され、終値が出来高(50日平均の1.4倍以上)を伴ってピボットを初めて上抜けた銘柄(状態が「ブレイク」)。",
+  daily: "その日のスクリーニングで、トレンドテンプレートの8条件を満たし、VCP と判定され、終値がピボットを初めて上抜けた銘柄。出来高は問いません。出来高が50日平均の1.4倍以上だったか(「出来高」の列)は一覧で確かめられます。",
+  vcp_pivot_anyvol: "トレンドテンプレートを満たし、VCP と判定され、終値がピボットを初めて上抜けた日。出来高は問いません(50日平均の1.4倍以上だったかは「出来高」の列で確かめられます)。",
   vcp_pivot: "トレンドテンプレートを満たし、VCP と判定され、終値が出来高を伴ってピボットを初めて上抜けた日(日々のスクリーニングの「ブレイク」と同じ判定)。",
   vcp_high52_8pct: "トレンドテンプレートを満たし、終値が前日までの52週高値を初めて上抜けた日のうち、その日に VCP と判定されたもの。",
   high52_8pct: "トレンドテンプレートを満たし、終値が前日までの52週高値を初めて上抜けた日(VCP は問わない)。",
 };
 const STOP = {
+  vcp_pivot_anyvol: "最後の収縮の安値 − 0.5ATR と 終値 − 1.5ATR の遠い方。安値が触れたらその価格で、始値が下回っていたら始値で売ります。",
   daily: "判定の日に決めた損切り(最後の収縮の安値 − 0.5ATR と 終値 − 1.5ATR の遠い方)。安値が触れたらその価格で、始値が下回っていたら始値で売ります。",
   vcp_pivot: "最後の収縮の安値 − 0.5ATR と 終値 − 1.5ATR の遠い方。安値が触れたらその価格で、始値が下回っていたら始値で売ります。",
   vcp_high52_8pct: "買値の8%下。安値が触れたらその価格で、始値が下回っていたら始値で売ります。",
@@ -322,10 +333,11 @@ const benchSQL = (from, to) => `SELECT CAST(date AS STRING) AS d, adj_close AS c
 
 async function loadDaily() {
   const info = (await bq(`SELECT COUNT(DISTINCT as_of) AS days, CAST(MIN(as_of) AS STRING) AS a, CAST(MAX(as_of) AS STRING) AS b,
-      COUNTIF(status = 'ブレイク') AS nbreak, COUNTIF(STARTS_WITH(status, 'ブレイク(出来高不足)')) AS nweak
+      COUNTIF(status = 'ブレイク') AS nbreak, COUNTIF(status = 'ブレイク(出来高不足)') AS nweak
     FROM ${T("minervini_screen")}`))[0] || {};
-  const sig = await bq(`SELECT CAST(as_of AS STRING) AS as_of, code, name, sector, close, pivot, stop, rs
-    FROM ${T("minervini_screen")} WHERE status = 'ブレイク' AND tt_pass ORDER BY as_of, rs DESC`);
+  // 出来高を問わない。「ブレイク(出来高不足)」はブレイクの翌日以降も同じ表示なので、当日かどうかは株価で確かめる(replayDaily)
+  const sig = await bq(`SELECT CAST(as_of AS STRING) AS as_of, code, name, sector, close, pivot, stop, rs, breakout_vol, status
+    FROM ${T("minervini_screen")} WHERE status IN ('ブレイク', 'ブレイク(出来高不足)') AND tt_pass ORDER BY as_of, rs DESC`);
   const last = (await bq(`SELECT CAST(MAX(date) AS STRING) AS d FROM ${T("prices")} WHERE code = '${BENCH}' AND date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 30 DAY)`))[0];
   const end = (last && last.d) || info.b;
   const from = info.a || end;
@@ -346,11 +358,13 @@ function replayDaily(sig, series) {
   for (const g of sig) {
     const rows = series[g.code] || [];
     const i = rows.findIndex(r => r.d === g.as_of);
-    const rec = {code: g.code, name: g.name, sector: g.sector, rs: g.rs, signal_date: g.as_of};
+    const rec = {code: g.code, name: g.name, sector: g.sector, rs: g.rs, signal_date: g.as_of, breakout_vol: g.breakout_vol};
     if (i < 0) { out.push({...rec, result: "見送り: 株価なし"}); continue; }
     // 判定の後に配当・分割で調整後の株価が変わっていても合うように、判定の日の終値の比で直す
     const f = g.close ? rows[i].c / g.close : 1;
     const pivot = g.pivot * f, stop0 = g.stop * f;
+    // ブレイクの翌日以降(前日の終値がもうピボットより上)はシグナルにしない
+    if (g.status !== "ブレイク" && (i === 0 || rows[i - 1].c > pivot)) continue;
     Object.assign(rec, {pivot, stop: stop0});
     if (busy[g.code] != null && busy[g.code] >= i) { out.push({...rec, result: "見送り: 保有中"}); continue; }
     const e = i + 1;
@@ -381,7 +395,7 @@ function replayDaily(sig, series) {
 }
 
 async function loadBacktest(v) {
-  const rows = await bq(`SELECT code, name, sector, rs, CAST(signal_date AS STRING) AS signal_date, result, pivot, stop,
+  const rows = await bq(`SELECT code, name, sector, rs, CAST(signal_date AS STRING) AS signal_date, result, pivot, stop, breakout_vol,
       CAST(entry_date AS STRING) AS entry_date, entry, CAST(exit_date AS STRING) AS exit_date, exit, exit_reason,
       CAST(breakeven_date AS STRING) AS breakeven_date
     FROM ${T("minervini_backtest")} WHERE variant = '${clean(v)}' AND result != '見送り: 保有中' ORDER BY signal_date, rs DESC`);
@@ -499,7 +513,7 @@ function summarize(sim) {
 }
 
 /* ---------- 表示 ---------- */
-let SIM = null, CH = null, tfilter = "trade";
+let SIM = null, CH = null, tfilter = "trade", vfilter = "all";
 function stat(label, value, cls, sub) {
   return h("div", {class: "stat"}, h("span", null, label), h("b", {class: cls}, value), sub ? h("small", null, sub) : null);
 }
@@ -586,6 +600,10 @@ function hover(e) {
 }
 function hideTip() { if (CH) { CH.cross.setAttribute("visibility", "hidden"); CH.dot.setAttribute("visibility", "hidden"); } $("#tip").style.display = "none"; }
 
+// ブレイク日の出来高(50日平均の何倍か)と、エントリーの元の条件(1.4倍以上)を満たしたか
+const volOk = t => t.breakout_vol != null && t.breakout_vol >= P.BREAKOUT_VOL_RATIO;
+const volCell = t => h("td", null, t.breakout_vol == null ? "-" : fx(t.breakout_vol, 2) + "倍 ",
+  t.breakout_vol == null ? null : h("span", {class: "pill " + (volOk(t) ? "win" : "skip")}, volOk(t) ? "満たす" : "不足"));
 const nameCell = t => h("td", {class: "l"}, h("div", {class: "nm"}, h("span", null, t.name || t.code), h("small", null, `${t.code}${t.sector ? " ・ " + t.sector : ""}`)));
 function renderHold() {
   const held = SIM.trades.filter(t => t.result === "保有中"), pend = SIM.trades.filter(t => t.result === "注文中");
@@ -593,13 +611,13 @@ function renderHold() {
   if (!held.length && !pend.length) return;
   $("#hold-title").textContent = `保有中 ${held.length}銘柄` + (pend.length ? `・翌営業日に買い ${pend.length}銘柄` : "");
   $("#hold").replaceChildren(
-    h("thead", null, h("tr", null, ...["銘柄", "買った日", "株数", "買値", "損切り(今)", "評価日の終値", "評価額", "含み損益", "R", ""].map((x, k) => h("th", {class: k === 0 || k === 9 ? "l" : null}, x)))),
+    h("thead", null, h("tr", null, ...["銘柄", "買った日", "出来高", "株数", "買値", "損切り(今)", "評価日の終値", "評価額", "含み損益", "R", ""].map((x, k) => h("th", {class: k === 0 || k === 10 ? "l" : null}, x)))),
     h("tbody", null,
-      ...held.map(t => h("tr", null, nameCell(t), h("td", null, t.entry_date), h("td", null, t.shares.toLocaleString("ja-JP")), h("td", null, fp(t.entry)),
+      ...held.map(t => h("tr", null, nameCell(t), h("td", null, t.entry_date), volCell(t), h("td", null, t.shares.toLocaleString("ja-JP")), h("td", null, fp(t.entry)),
         h("td", null, fp(t.stop_now ?? t.stop)), h("td", null, fp(t.last)), h("td", null, yen(t.value)),
         h("td", {class: sign(t.pnl)}, syen(t.pnl)), h("td", {class: sign(t.r_mult)}, fr(t.r_mult)),
         h("td", {class: "l"}, t.pending_exit ? h("span", {class: "pill loss"}, t.pending_exit) : t.breakeven_date ? h("span", {class: "pill win"}, "損切りを買値へ") : null))),
-      ...pend.map(t => h("tr", null, nameCell(t), h("td", {colspan: 8, class: "l"}, `${t.signal_date} にブレイク。翌営業日の始値で買う予定(ピボット ${fp(t.pivot)}、損切り ${fp(t.stop)})`), h("td", {class: "l"}, h("span", {class: "pill hold"}, "注文中"))))));
+      ...pend.map(t => h("tr", null, nameCell(t), h("td", {colspan: 9, class: "l"}, `${t.signal_date} にブレイク。翌営業日の始値で買う予定(ピボット ${fp(t.pivot)}、損切り ${fp(t.stop)})`), h("td", {class: "l"}, h("span", {class: "pill hold"}, "注文中"))))));
 }
 function renderYears() {
   const c = SIM.curve, years = {};
@@ -622,7 +640,12 @@ function renderYears() {
 }
 function renderTrades() {
   const all = SIM.trades.filter(t => t.result !== "期間外");
-  const traded = all.filter(t => t.shares), skipped = all.filter(t => !t.shares && t.result.startsWith("見送り"));
+  const byVol = t => vfilter === "all" || (vfilter === "ok") === volOk(t);
+  const traded = all.filter(t => t.shares && byVol(t)), skipped = all.filter(t => !t.shares && t.result.startsWith("見送り") && byVol(t));
+  $("#vfilter").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === vfilter)));
+  // 出来高の条件を満たしたか別の成績(手仕舞い済みと保有中の評価を合わせて)
+  const grp = ok => { const g = all.filter(t => t.shares && volOk(t) === ok), w = g.filter(t => t.pnl > 0).length;
+    return `${ok ? "満たした" : "不足"} ${g.length}回(勝率 ${g.length ? fx(w / g.length * 100, 0) : "-"}%、平均 ${fr(g.length ? g.reduce((a, t) => a + t.r_mult, 0) / g.length : null)}、損益 ${syen(g.reduce((a, t) => a + t.pnl, 0))})`; };
   $("#tfilter").querySelectorAll("button").forEach(b => {
     b.setAttribute("aria-pressed", String(b.dataset.f === tfilter));
     b.textContent = b.dataset.f === "trade" ? `売買 ${traded.length}` : `見送り ${skipped.length}`;
@@ -630,22 +653,22 @@ function renderTrades() {
   const skipCounts = {};
   for (const t of skipped) skipCounts[t.result] = (skipCounts[t.result] || 0) + 1;
   $("#trades-note").textContent = tfilter === "trade"
-    ? "新しい順。損益は手数料・滑りを引いた金額、R は価格だけで計算した倍数です。"
+    ? `新しい順。損益は手数料・滑りを引いた金額、R は価格だけで計算した倍数です。出来高(50日平均の${P.BREAKOUT_VOL_RATIO}倍以上)の条件を ${grp(true)}、${grp(false)}。`
     : "見送りの内訳: " + (Object.entries(skipCounts).map(([k, v]) => `${k.replace("見送り: ", "")} ${v}`).join("、") || "なし") + "。「現金不足」「1単元に届かない」が、資金の制約で増えた見送りです。";
   const list = (tfilter === "trade" ? traded : skipped).slice().sort((a, b) => (b.entry_date || b.signal_date).localeCompare(a.entry_date || a.signal_date));
   if (!list.length) { $("#trades").replaceChildren(h("tbody", null, h("tr", null, h("td", {class: "l"}, tfilter === "trade" ? "売買はまだありません。" : "見送りはありません。")))); return; }
   if (tfilter === "trade") {
     const pill = t => t.result === "保有中" ? h("span", {class: "pill hold"}, "保有中") : h("span", {class: "pill " + (t.pnl > 0 ? "win" : "loss")}, t.exit_reason || "");
     $("#trades").replaceChildren(
-      h("thead", null, h("tr", null, ...["銘柄", "シグナル", "買った日", "株数", "買値", "当初の損切り", "売った日", "売値", "損益", "騰落", "R", "結果"].map((x, k) => h("th", {class: k === 0 || k === 11 ? "l" : null}, x)))),
-      h("tbody", null, ...list.map(t => h("tr", null, nameCell(t), h("td", null, t.signal_date), h("td", null, t.entry_date), h("td", null, t.shares.toLocaleString("ja-JP")),
+      h("thead", null, h("tr", null, ...["銘柄", "シグナル", "出来高", "買った日", "株数", "買値", "当初の損切り", "売った日", "売値", "損益", "騰落", "R", "結果"].map((x, k) => h("th", {class: k === 0 || k === 12 ? "l" : null}, x)))),
+      h("tbody", null, ...list.map(t => h("tr", null, nameCell(t), h("td", null, t.signal_date), volCell(t), h("td", null, t.entry_date), h("td", null, t.shares.toLocaleString("ja-JP")),
         h("td", null, fp(t.entry)), h("td", null, fp(t.stop)), h("td", null, t.exit_date || "-"), h("td", null, fp(t.exit ?? t.last)),
         h("td", {class: sign(t.pnl)}, syen(t.pnl)), h("td", {class: sign(t.ret_pct)}, spct(t.ret_pct)), h("td", {class: sign(t.r_mult)}, fr(t.r_mult)),
         h("td", {class: "l"}, pill(t))))));
   } else {
     $("#trades").replaceChildren(
-      h("thead", null, h("tr", null, ...["銘柄", "シグナル", "買う予定の日", "翌日始値", "損切り", "見送りの理由"].map((x, k) => h("th", {class: k === 0 || k === 5 ? "l" : null}, x)))),
-      h("tbody", null, ...list.map(t => h("tr", null, nameCell(t), h("td", null, t.signal_date), h("td", null, t.entry_date || "-"), h("td", null, fp(t.entry)),
+      h("thead", null, h("tr", null, ...["銘柄", "シグナル", "出来高", "買う予定の日", "翌日始値", "損切り", "見送りの理由"].map((x, k) => h("th", {class: k === 0 || k === 6 ? "l" : null}, x)))),
+      h("tbody", null, ...list.map(t => h("tr", null, nameCell(t), h("td", null, t.signal_date), volCell(t), h("td", null, t.entry_date || "-"), h("td", null, fp(t.entry)),
         h("td", null, fp(t.stop)), h("td", {class: "l"}, h("span", {class: "pill skip"}, t.result.replace("見送り: ", "")))))));
   }
 }
@@ -655,10 +678,10 @@ function renderEmptyDaily(data) {
   $("#out").hidden = true;
   const b = $("#banner"); b.hidden = false;
   b.replaceChildren(
-    h("p", null, h("strong", null, "まだ「ブレイク」と判定された銘柄がありません。")),
-    h("p", {class: "note"}, i.days ? `判定が保存されているのは ${i.a} 〜 ${i.b} の ${i.days}営業日です(出来高が足りないブレイクは ${i.nweak || 0}件)。ブレイクが出ると、翌営業日の始値で買った想定で、ここに資産の推移と保有中の銘柄が表示されます。` : "判定がまだ保存されていません。"),
+    h("p", null, h("strong", null, "まだピボットを上抜けた銘柄がありません。")),
+    h("p", {class: "note"}, i.days ? `判定が保存されているのは ${i.a} 〜 ${i.b} の ${i.days}営業日です。ブレイクが出ると、翌営業日の始値で買った想定で、ここに資産の推移と保有中の銘柄が表示されます。` : "判定がまだ保存されていません。"),
     h("p", {class: "note"}, "同じルールで過去にどうなったかは、バックテストのシグナルで確かめられます。"),
-    h("div", null, h("button", {class: "btn", type: "button", onclick: () => { $("#src").value = "vcp_pivot"; onChange(); }}, "バックテスト(VCPのピボット抜け)で計算する")));
+    h("div", null, h("button", {class: "btn", type: "button", onclick: () => { $("#src").value = "vcp_pivot_anyvol"; onChange(); }}, "バックテスト(VCPのピボット抜け・出来高問わず)で計算する")));
 }
 
 let token = 0;
@@ -699,6 +722,7 @@ writeForm();
 $("#form").addEventListener("change", onChange);
 $("#form").addEventListener("submit", e => { e.preventDefault(); onChange(); });
 $("#reset").addEventListener("click", () => { opt = {...DEFAULTS, src: opt.src}; writeForm(); saveOpt(); run(); });
+$("#vfilter").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; vfilter = b.dataset.v; renderTrades(); });
 $("#tfilter").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; tfilter = b.dataset.f; renderTrades(); });
 document.addEventListener("pointermove", e => { if (e.target.closest && e.target.closest("#chart")) hover(e); else hideTip(); });
 let rz; addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { if (SIM) drawChart(); }, 150); });
