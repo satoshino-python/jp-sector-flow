@@ -181,6 +181,10 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
         <button type="button" data-v="all" aria-pressed="true">出来高不足も含む</button>
         <button type="button" data-v="ok" aria-pressed="false">出来高OKのみ</button>
       </div>
+      <div class="seg" id="hist-late" role="group" aria-label="後追いのブレイク">
+        <button type="button" data-l="all" aria-pressed="true">後追いも含む</button>
+        <button type="button" data-l="hide" aria-pressed="false">後追いを除く</button>
+      </div>
       <label for="hist-sort">並び <select id="hist-sort"><option value="new">新しい順</option><option value="old">古い順</option><option value="rs">RSの高い順</option><option value="vol">出来高の多い順</option></select></label>
       <label for="hist-q">検索 <input id="hist-q" type="search" placeholder="銘柄名・コード" style="font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--fg)"></label>
     </div>
@@ -1030,7 +1034,8 @@ function renderBTDetail(x) {
 /* ---------- 今年のブレイク一覧(minervini_screen の日々の判定から) ---------- */
 // VCPと判定され、状態が「ブレイク…」になった銘柄を、基準日の最新が属する年の分だけ並べる。
 // 同じ状態が続く間は最初の日だけ(状態が変わったら、その日も出す)。「現在」は最新の基準日の終値。
-const HIST = {rows: null, vol: "all", q: "", sort: "new", latest: null};
+const HIST = {rows: null, vol: "all", late: "all", q: "", sort: "new", latest: null};
+try { if (localStorage.getItem("minervini-hist-late") === "hide") HIST.late = "hide"; } catch (e) { /* 無視 */ }
 async function loadHist() {
   if (!HIST.rows) {
     banner(["今年のブレイクを BigQuery から読み込んでいます…", ""]);
@@ -1063,7 +1068,8 @@ function renderHist() {
   if (!HIST.rows) return;
   document.querySelectorAll("#hist-vol button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === HIST.vol ? "true" : "false"));
   const q = HIST.q.trim().toLowerCase();
-  let list = HIST.rows.filter(x => (HIST.vol === "all" || !(volShort(x) || isLate(x))) && (!q || ((x.name || "") + " " + x.code).toLowerCase().includes(q)));
+  document.querySelectorAll("#hist-late button").forEach(b => b.setAttribute("aria-pressed", b.dataset.l === HIST.late ? "true" : "false"));
+  let list = HIST.rows.filter(x => (HIST.vol === "all" || !volShort(x)) && (HIST.late === "all" || !isLate(x)) &&(!q || ((x.name || "") + " " + x.code).toLowerCase().includes(q)));
   const by = {new: (a, b) => b.as_of.localeCompare(a.as_of) || (b.rs ?? 0) - (a.rs ?? 0), old: (a, b) => a.as_of.localeCompare(b.as_of) || (b.rs ?? 0) - (a.rs ?? 0),
     rs: (a, b) => (b.rs ?? 0) - (a.rs ?? 0), vol: (a, b) => (b.breakout_vol ?? -1) - (a.breakout_vol ?? -1)}[HIST.sort];
   list = [...list].sort(by);
@@ -1154,6 +1160,10 @@ document.querySelectorAll("#bt-result button").forEach(b => b.addEventListener("
 $("#bt-variant").addEventListener("change", e => { BT.variant = e.target.value; BT.key = null; loadVariant(BT.variant); });
 $("#bt-sort").addEventListener("change", e => { BT.sort = e.target.value; renderBT(); });
 document.querySelectorAll("#hist-vol button").forEach(b => b.addEventListener("click", () => { HIST.vol = b.dataset.v; renderHist(); }));
+document.querySelectorAll("#hist-late button").forEach(b => b.addEventListener("click", () => {
+  HIST.late = b.dataset.l; renderHist();
+  try { localStorage.setItem("minervini-hist-late", HIST.late); } catch (e) { /* 無視 */ }
+}));
 $("#hist-sort").addEventListener("change", e => { HIST.sort = e.target.value; renderHist(); });
 $("#hist-q").addEventListener("input", e => { HIST.q = e.target.value; renderHist(); });
 setMode(state.mode);
