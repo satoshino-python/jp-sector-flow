@@ -1,4 +1,4 @@
-<title>VCPスクリーニング検証</title>
+<title>VCPスクリーニング、検証</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
 /* 構成: 見出しと件数 → 左に銘柄リスト(VCP判定 / 不合格の理由で絞り込み)、右に選んだ銘柄のチャートと判定の内訳。
@@ -89,7 +89,16 @@ td.wrap .pill.no{font-size:11px}
 .key span{display:inline-flex;align-items:center;gap:5px}
 .key i{display:inline-block;width:16px;height:0;border-top:2px solid}
 .key i.box{width:10px;height:10px;border:0;border-radius:2px}
-.chart{position:relative;min-width:0;touch-action:pan-y;cursor:crosshair}
+.chart{position:relative;min-width:0;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.chart.dragging{cursor:grabbing}
+.zoombar{display:inline-flex;border:1px solid var(--axis);border-radius:6px;overflow:hidden}
+.zoombar button{background:transparent;border:0;padding:4px 14px;font-size:14px;line-height:1.3;cursor:pointer;min-width:42px}
+.zoombar button+button{border-left:1px solid var(--axis)}
+.zoombar button:hover{background:var(--wash)}
+.zoombar button.txt{font-size:12px;min-width:0}
+.readout{min-height:22px;display:flex;flex-wrap:wrap;gap:2px 14px;align-items:baseline;font-size:12px;color:var(--fg2);padding:0 2px 6px;font-variant-numeric:tabular-nums}
+.readout b{color:var(--fg)} .readout em{font-style:normal;color:var(--muted);margin-right:4px} .readout .hint{color:var(--muted)}
+@media (max-width:560px){.readout{min-height:42px}}
 svg text{font-family:var(--sans);fill:var(--fg2)}
 .ax{font-size:11px}
 .lbl{font-size:11px;font-weight:700}
@@ -129,18 +138,12 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
 .banner{border:1px solid var(--axis);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;background:var(--surface)}
 .banner p{margin:0;max-width:75ch}
 .foot p{margin:0;max-width:80ch}
-#tip{position:fixed;z-index:20;pointer-events:none;background:var(--surface);color:var(--fg);border:1px solid var(--axis);
-  border-radius:6px;padding:7px 10px;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,.18);display:none;min-width:150px}
-#tip .tl{font-weight:700;margin-bottom:3px}
-#tip .tr{display:flex;gap:12px;justify-content:space-between;white-space:nowrap}
-#tip .tr span:first-child{color:var(--fg2)}
-#tip .tr span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
 </style>
 
 <div class="wrap">
   <header>
     <div>
-      <h1>VCPスクリーニング検証</h1>
+      <h1>VCPスクリーニング、検証</h1>
       <p class="note" id="sub">プログラムが検出したベース・収縮・ピボット・損切りを、チャートに重ねて確かめます。</p>
     </div>
     <div class="counts" id="counts"></div>
@@ -149,6 +152,7 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
   <div class="modebar">
     <div class="seg" id="mode" role="group" aria-label="表示する内容">
       <button type="button" data-m="screen" aria-pressed="true">日々のスクリーニング</button>
+      <button type="button" data-m="hist" aria-pressed="false">今年のブレイク</button>
       <button type="button" data-m="bt" aria-pressed="false">バックテスト</button>
     </div>
     <p class="note" id="mode-note"></p>
@@ -170,6 +174,19 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
 
     <section class="panel" id="detail" aria-label="選んだ銘柄"></section>
   </div>
+
+  <section class="panel" id="hist" aria-label="今年のブレイク一覧" hidden>
+    <div class="filters">
+      <div class="seg" id="hist-vol" role="group" aria-label="出来高の条件">
+        <button type="button" data-v="all" aria-pressed="true">出来高不足も含む</button>
+        <button type="button" data-v="ok" aria-pressed="false">出来高OKのみ</button>
+      </div>
+      <label for="hist-sort">並び <select id="hist-sort"><option value="new">新しい順</option><option value="old">古い順</option><option value="rs">RSの高い順</option><option value="vol">出来高の多い順</option></select></label>
+      <label for="hist-q">検索 <input id="hist-q" type="search" placeholder="銘柄名・コード" style="font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--fg)"></label>
+    </div>
+    <p class="note" id="hist-note"></p>
+    <div class="list"><table id="hist-list"></table></div>
+  </section>
 
   <div class="layout" id="bt" hidden>
     <section class="panel" aria-label="バックテストのトレード">
@@ -200,7 +217,6 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
     <p>投資判断の材料の一つであり、売買の推奨ではありません。</p>
   </section>
 </div>
-<div id="tip" role="tooltip"></div>
 
 <script>
 "use strict";
@@ -248,8 +264,10 @@ const state = {mode: "screen", tab: "vcp", reason: null, code: null, bars: inner
 try { const t = localStorage.getItem("minervini-tab"); if (t) state.tab = t; } catch (e) { /* 無視 */ }
 try { const m = localStorage.getItem("minervini-mode"); if (m === "bt") state.mode = m; } catch (e) { /* 無視 */ }
 
+const LATE = "ブレイク済み(後追い)";   // ピボットを上抜けた日はテンプレート未達だった銘柄(src/minervini.py の LATE_BREAKOUT)
 function statusClass(st) {
   if (!st) return "no";
+  if (st === LATE) return "skip";
   if (st.startsWith("ブレイク") && !st.includes("不足")) return "go";
   if (st.startsWith("ピボット") || st.includes("不足")) return "wait";
   return "skip";
@@ -370,7 +388,8 @@ function renderDetail() {
       x.vcp ? h("span", {class: "pill " + statusClass(x.status)}, x.status) : h("span", {class: "pill skip"}, "VCP不合格")),
     h("div", {class: "tools"},
       h("div", {class: "seg", role: "group", "aria-label": "表示期間"}, ranges.map(([lab, n]) => h("button", {type: "button", "aria-pressed": state.bars === n ? "true" : "false",
-        onclick: () => { state.bars = n; renderDetail(); }}, lab))),
+        onclick: () => { state.bars = n; VIEW = null; renderDetail(); }}, lab))),
+      zoomTools(x),
       h("div", {class: "key"},
         h("span", null, h("i", {style: "border-color:var(--ma50)"}), "50日線"), h("span", null, h("i", {style: "border-color:var(--ma150)"}), "150日線"),
         h("span", null, h("i", {style: "border-color:var(--ma200)"}), "200日線"), h("span", null, h("i", {class: "box", style: "background:var(--base)"}), "ベース"),
@@ -415,7 +434,7 @@ function drawChart(x) {
   if (!x.c) { wrap.replaceChildren(h("div", {class: "state"}, x.priceError || "チャートを読み込んでいます…")); CH = null; return; }
   // 表示範囲 [i0, i1)。バックテストのトレードは x.win(ベースの手前〜手仕舞いの後)を使う
   const len = x.c.length;
-  const [i0, i1] = x.win ? [Math.max(0, x.win[0]), Math.min(len, x.win[1])] : [len - Math.min(state.bars, len), len];
+  const [i0, i1] = curRange(x);
   const n = i1 - i0;
   const W = Math.max(300, wrap.clientWidth || 700), narrow = W < 560;
   const mg = {l: 8, r: narrow ? 52 : 64, t: 12, b: 24}, H1 = narrow ? 240 : 330, H2 = 70, gap = 10;
@@ -534,8 +553,10 @@ function drawChart(x) {
     svg.append(s("text", {class: "ax", x: X(i), y: H - 6, "text-anchor": k === 0 ? "start" : k === nx - 1 ? "end" : "middle"}, x.d[i].slice(2).replaceAll("-", "/"))); }
   const cross = s("line", {y1: pTop, y2: vBot, stroke: "var(--fg2)", visibility: "hidden"});
   svg.append(cross);
-  wrap.replaceChildren(svg);
-  CH = {x, i0, n, sw, ml: mg.l, cross, X};
+  const readout = h("div", {class: "readout", id: "readout", "aria-live": "off"});
+  wrap.replaceChildren(readout, svg);
+  CH = {x, i0, n, sw, ml: mg.l, cross, X, readout};
+  if (SEL && SEL.x === x && SEL.i >= i0 && SEL.i < i1) showAt(SEL.i); else idleReadout();
 }
 function niceTicks(lo, hi, n) {
   const span = hi - lo, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
@@ -543,21 +564,116 @@ function niceTicks(lo, hi, n) {
   const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) out.push(v);
   return out;
 }
+/* 日々の値は、ポインタに付いてくる吹き出しではなく、チャートの上の固定バーに出す(ローソク足に被らない) */
+let SEL = null;
+function idleReadout() {
+  if (!CH) return;
+  CH.cross.setAttribute("visibility", "hidden");
+  CH.readout.replaceChildren(h("span", {class: "hint"}, "チャートをなぞる／タップすると、その日の値をここに表示します"));
+}
+function clearSel() { SEL = null; idleReadout(); }
+function showAt(i) {
+  if (!CH) return;
+  const x = CH.x; SEL = {x, i};
+  const px = CH.X(i);
+  CH.cross.setAttribute("x1", px); CH.cross.setAttribute("x2", px); CH.cross.setAttribute("visibility", "visible");
+  const it = (a, b) => h("span", null, h("em", null, a), b);
+  CH.readout.replaceChildren(h("b", null, x.d[i]), it("始値", fp(x.o[i])), it("高値", fp(x.h[i])), it("安値", fp(x.l[i])), it("終値", fp(x.c[i])),
+    it("出来高/50日平均", x.va[i] ? fx(x.v[i] / x.va[i], 2) + "倍" : "-"));
+}
 function hover(e) {
   if (!CH) return;
   const rect = $("#chart").getBoundingClientRect(), j = Math.floor((e.clientX - rect.left - CH.ml) / CH.sw);
-  const tip = $("#tip");
-  if (j < 0 || j >= CH.n) { CH.cross.setAttribute("visibility", "hidden"); tip.style.display = "none"; return; }
-  const i = CH.i0 + j, x = CH.x, px = CH.X(i);
-  CH.cross.setAttribute("x1", px); CH.cross.setAttribute("x2", px); CH.cross.setAttribute("visibility", "visible");
-  const row = (a, b) => h("div", {class: "tr"}, h("span", null, a), h("span", null, b));
-  tip.replaceChildren(h("div", {class: "tl"}, x.d[i]), row("始値", fp(x.o[i])), row("高値", fp(x.h[i])), row("安値", fp(x.l[i])), row("終値", fp(x.c[i])),
-    row("出来高/50日平均", x.va[i] ? fx(x.v[i] / x.va[i], 2) + "倍" : "-"));
-  tip.style.display = "block";
-  const tw = tip.offsetWidth, th = tip.offsetHeight;
-  tip.style.left = clamp(e.clientX + 14, 4, innerWidth - tw - 4) + "px";
-  tip.style.top = clamp(e.clientY + 14, 4, innerHeight - th - 4) + "px";
+  if (j < 0 || j >= CH.n) { if (e.pointerType === "mouse") clearSel(); return; }
+  showAt(CH.i0 + j);
 }
+
+/* ---------- 拡大縮小・移動 ----------
+   ドラッグ(横)で移動 / ピンチ・マウスホイールで拡大縮小 / ＋−ボタン / ダブルクリックで初期表示に戻す */
+let VIEW = null;                       // {x, i0, i1}: 手で変えた表示範囲。null なら初期の範囲
+const MIN_BARS = 15;
+function curRange(x) {
+  const len = x.c.length;
+  if (VIEW && VIEW.x === x) return [clamp(VIEW.i0, 0, len - 1), clamp(VIEW.i1, 1, len)];
+  return x.win ? [Math.max(0, x.win[0]), Math.min(len, x.win[1])] : [len - Math.min(state.bars, len), len];
+}
+let drawRq = 0;
+function scheduleDraw() { cancelAnimationFrame(drawRq); drawRq = requestAnimationFrame(() => { if (CH) drawChart(CH.x); }); }
+function setView(x, i0, i1) {
+  const len = x.c.length;
+  const n = clamp(Math.round(i1 - i0), Math.min(MIN_BARS, len), len);
+  i0 = clamp(Math.round(i0), 0, len - n);
+  VIEW = {x, i0, i1: i0 + n};
+  scheduleDraw();
+}
+function zoomBy(x, factor, anchor = 0.5) {         // factor > 1 で拡大(表示する日数を減らす)
+  if (!x || !x.c) return;
+  const [a, b] = curRange(x), n = b - a, nn = n / factor, c = a + n * anchor;
+  setView(x, c - nn * anchor, c - nn * anchor + nn);
+}
+function resetView() { VIEW = null; scheduleDraw(); }
+function zoomTools(x) {
+  const b = (lab, aria, fn, cls) => h("button", {type: "button", "aria-label": aria, title: aria, class: cls, onclick: fn}, lab);
+  return h("div", {class: "zoombar", role: "group", "aria-label": "チャートの拡大縮小"},
+    b("−", "縮小", () => zoomBy(x, 1 / 1.5)), b("＋", "拡大", () => zoomBy(x, 1.5)), b("初期表示", "初期の表示範囲に戻す", resetView, "txt"));
+}
+
+const ptrs = new Map();   // pointerId -> {x, y}
+let G = null;             // {kind: "pan" | "pinch" | "idle", ...}
+const chartEl = e => e.target && e.target.closest && e.target.closest("#chart");
+function startGesture() {
+  if (!CH) { G = null; return; }
+  const x = CH.x, [a, b] = curRange(x), pts = [...ptrs.values()];
+  if (pts.length === 1) G = {kind: "pan", x0: pts[0].x, a, b, sw: CH.sw, moved: false};
+  else if (pts.length === 2) {
+    const rect = $("#chart").getBoundingClientRect(), mx = (pts[0].x + pts[1].x) / 2;
+    G = {kind: "pinch", d0: Math.max(10, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)), a, b, f: clamp((mx - rect.left - CH.ml) / (CH.n * CH.sw), 0, 1)};
+  } else G = {kind: "idle"};
+}
+document.addEventListener("pointerdown", e => {
+  const el = chartEl(e); if (!el || !CH || (e.pointerType === "mouse" && e.button !== 0)) return;
+  ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
+  try { el.setPointerCapture(e.pointerId); } catch (_) { /* 無視 */ }
+  startGesture();
+});
+document.addEventListener("pointermove", e => {
+  if (ptrs.has(e.pointerId)) {
+    ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    if (!G || !CH) return;
+    const x = CH.x;
+    if (G.kind === "pan") {
+      const dx = e.clientX - G.x0;
+      if (!G.moved && Math.abs(dx) > 5) { G.moved = true; $("#chart").classList.add("dragging"); }
+      if (G.moved) { const sh = Math.round(-dx / G.sw); setView(x, G.a + sh, G.b + sh); }
+    } else if (G.kind === "pinch" && ptrs.size === 2) {
+      const [p, q] = [...ptrs.values()], ratio = Math.hypot(p.x - q.x, p.y - q.y) / G.d0, n0 = G.b - G.a, nn = n0 / ratio, c = G.a + n0 * G.f;
+      setView(x, c - nn * G.f, c - nn * G.f + nn);
+    }
+    return;
+  }
+  if (chartEl(e)) hover(e);
+  else if (CH && e.pointerType === "mouse" && SEL) clearSel();
+});
+function endPointer(e) {
+  if (!ptrs.has(e.pointerId)) return;
+  const tap = G && G.kind === "pan" && !G.moved && e.type === "pointerup" && e.pointerType !== "mouse";
+  ptrs.delete(e.pointerId);
+  const el = $("#chart"); if (el) el.classList.remove("dragging");
+  if (tap) hover(e);
+  G = ptrs.size ? {kind: "idle"} : null;      // ピンチ後に残った指では移動を始めない
+}
+document.addEventListener("pointerup", endPointer);
+document.addEventListener("pointercancel", endPointer);
+document.addEventListener("wheel", e => {
+  const el = chartEl(e); if (!el || !CH) return;
+  e.preventDefault();
+  const rect = el.getBoundingClientRect(), x = CH.x, k = e.deltaMode === 1 ? 33 : 1;
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {          // 横スクロール(トラックパッド)は移動
+    const [a, b] = curRange(x), sh = Math.round(e.deltaX * k / CH.sw);
+    if (sh) setView(x, a + sh, b + sh);
+  } else zoomBy(x, Math.exp(-e.deltaY * k * (e.ctrlKey ? 0.01 : 0.002)), clamp((e.clientX - rect.left - CH.ml) / (CH.n * CH.sw), 0, 1));
+}, {passive: false});
+document.addEventListener("dblclick", e => { if (chartEl(e) && CH) resetView(); });
 
 /* ---------- BigQuery(閲覧者のコネクタ経由) ---------- */
 const mcpP = window.claude && window.claude.use ? window.claude.use("mcp") : Promise.resolve(null);
@@ -614,7 +730,7 @@ function banner(lines, retry) {
   b.replaceChildren(...[h("p", null, h("strong", null, lines[0])), lines[1] ? h("p", {class: "note"}, lines[1]) : null,
     retry ? h("div", null, h("button", {class: "btn", type: "button", onclick: retry}, "読み込む")) : null].filter(Boolean));
 }
-const STATUS_RANK = st => !st ? 3 : st.startsWith("ブレイク") && !st.includes("不足") ? 0 : st === "ピボット接近" ? 1 : 2;
+const STATUS_RANK = st => !st ? 3 : st === LATE ? 2 : st.startsWith("ブレイク") && !st.includes("不足") ? 0 : st === "ピボット接近" ? 1 : 2;
 function toStock(r) {
   return {...r, tt: [1, 2, 3, 4, 5, 6, 7, 8].map(i => !!r["tt" + i]), reasons: (r.vcp_note || "").split(" / ").filter(Boolean)};
 }
@@ -700,9 +816,10 @@ async function loadPrices(x) {
 
 /* ---------- バックテスト(minervini_backtest) ---------- */
 // 売買ルール(src/minervini_backtest.py の VARIANTS)。古い結果(stop1.0 など)は名前をそのまま出す
-const VLABEL = {vcp_pivot: "VCPのピボット抜け・損切りは収縮の安値", high52_8pct: "52週高値抜け・損切り8%", vcp_high52_8pct: "VCP＋52週高値抜け・損切り8%"};
+const VLABEL = {vcp_pivot: "VCPのピボット抜け・損切りは収縮の安値", vcp_pivot_anyvol: "VCPのピボット抜け(出来高問わず)・損切りは収縮の安値", high52_8pct: "52週高値抜け・損切り8%", vcp_high52_8pct: "VCP＋52週高値抜け・損切り8%"};
 const VNOTE = {
   vcp_pivot: "シグナルは、トレンドテンプレートを満たし、VCPと判定され、終値が出来高を伴ってピボットを初めて上抜けた日。損切りは最後の収縮の安値−0.5ATR(と買値−1.5ATRの遠い方)。",
+  vcp_pivot_anyvol: "シグナルは、トレンドテンプレートを満たし、VCPと判定され、終値がピボットを初めて上抜けた日(出来高は問わない)。損切りは最後の収縮の安値−0.5ATR(と買値−1.5ATRの遠い方)。",
   high52_8pct: "シグナルは、トレンドテンプレートを満たし、終値が前日までの52週高値を初めて上抜けた日(VCPは問わない)。損切りは買値の8%下。",
   vcp_high52_8pct: "シグナルは、52週高値抜けのうち、その日にVCPと判定されたもの。損切りは買値の8%下。",
 };
@@ -796,6 +913,7 @@ function renderBT() {
   if (total > list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 3, class: "wrap", style: "text-align:left"},
     `全${total}件のうち先頭の${list.length}件を表示しています。並びを変えると別の${list.length}件を見られます。`))));
   if (!list.some(x => btKey(x) === BT.key)) { if (list.length) selectBT(btKey(list[0])); else $("#bt-detail").replaceChildren(h("p", {class: "note"}, "左のリストにシグナルがありません。")); }
+  else if (BT.pending && BT.pending === BT.key) { BT.pending = null; selectBT(BT.key); }   // 「過去のブレイク」から開いたとき
 }
 async function selectBT(key) {
   BT.key = key;
@@ -868,6 +986,7 @@ function renderBTDetail(x) {
     h("div", {class: "detail-head"},
       h("div", {class: "detail-title"}, x.name || x.code, h("small", null, `${x.code}　${x.sector || ""}`)),
       traded ? h("span", {class: "pill " + (x.r_mult > 0 ? "go" : "skip")}, `${fr(x.r_mult)}　${x.exit_reason}`) : h("span", {class: "pill skip"}, x.result)),
+    h("div", {class: "tools"}, zoomTools(x)),
     h("div", {class: "key"},
       h("span", null, h("i", {style: "border-color:var(--ma50);border-top-width:3px"}), "50日線(売りの基準)"), h("span", null, h("i", {style: "border-color:var(--ma150)"}), "150日線"),
       h("span", null, h("i", {style: "border-color:var(--ma200)"}), "200日線"), h("span", null, h("i", {class: "box", style: "background:var(--base)"}), "ベース"),
@@ -908,18 +1027,94 @@ function renderBTDetail(x) {
   drawChart(x);
 }
 
+/* ---------- 今年のブレイク一覧(minervini_screen の日々の判定から) ---------- */
+// VCPと判定され、状態が「ブレイク…」になった銘柄を、基準日の最新が属する年の分だけ並べる。
+// 同じ状態が続く間は最初の日だけ(状態が変わったら、その日も出す)。「現在」は最新の基準日の終値。
+const HIST = {rows: null, vol: "all", q: "", sort: "new", latest: null};
+async function loadHist() {
+  if (!HIST.rows) {
+    banner(["今年のブレイクを BigQuery から読み込んでいます…", ""]);
+    try {
+      const S = T("minervini_screen");
+      HIST.rows = await bq(`WITH s AS (
+          SELECT as_of, code, name, sector, status, rs, pivot, stop, risk_pct, breakout_vol, close, vcp,
+            LAG(status) OVER (PARTITION BY code ORDER BY as_of) AS prev
+          FROM ${S} WHERE as_of >= DATE_TRUNC((SELECT MAX(as_of) FROM ${S}), YEAR)),
+        l AS (SELECT code, close AS last_close, status AS last_status FROM ${S} WHERE as_of = (SELECT MAX(as_of) FROM ${S}))
+        SELECT CAST(s.as_of AS STRING) AS as_of, s.code, s.name, s.sector, s.status, s.rs, s.pivot, s.stop, s.risk_pct, s.breakout_vol, s.close,
+          l.last_close, l.last_status, CAST((SELECT MAX(as_of) FROM ${S}) AS STRING) AS latest
+        FROM s LEFT JOIN l ON s.code = l.code
+        WHERE s.vcp AND s.status LIKE 'ブレイク%' AND (s.prev IS NULL OR s.prev != s.status)
+        ORDER BY s.as_of DESC, s.code`);
+      HIST.latest = HIST.rows.length ? HIST.rows[0].latest : null;
+    } catch (e) {
+      const t = errorText(e);
+      if (e && e.code === "tool_error" && /not found/i.test(String(e.message))) t.splice(0, 2, "まだスクリーニング結果のテーブルがありません。", "GitHub Actions の minervini-screen か daily-update が実行されると作られます。");
+      banner(t, loadHist); return;
+    }
+  }
+  if (state.mode !== "hist") return;
+  banner(null);
+  renderHist();
+}
+const volShort = x => /不足/.test(x.status || "");
+const isLate = x => x.status === LATE;
+function renderHist() {
+  if (!HIST.rows) return;
+  document.querySelectorAll("#hist-vol button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === HIST.vol ? "true" : "false"));
+  const q = HIST.q.trim().toLowerCase();
+  let list = HIST.rows.filter(x => (HIST.vol === "all" || !(volShort(x) || isLate(x))) && (!q || ((x.name || "") + " " + x.code).toLowerCase().includes(q)));
+  const by = {new: (a, b) => b.as_of.localeCompare(a.as_of) || (b.rs ?? 0) - (a.rs ?? 0), old: (a, b) => a.as_of.localeCompare(b.as_of) || (b.rs ?? 0) - (a.rs ?? 0),
+    rs: (a, b) => (b.rs ?? 0) - (a.rs ?? 0), vol: (a, b) => (b.breakout_vol ?? -1) - (a.breakout_vol ?? -1)}[HIST.sort];
+  list = [...list].sort(by);
+  const nshort = list.filter(volShort).length, nlate = list.filter(isLate).length;
+  const yr = (HIST.latest || D.dates[0] || "").slice(0, 4);
+  $("#hist-note").textContent = `${yr}年のスクリーニングで、VCPと判定されてブレイクした銘柄です。${list.length}件(出来高OK ${list.length - nshort - nlate}件、出来高不足 ${nshort}件、後追い ${nlate}件)。` +
+    (nlate ? "後追いは、ピボットを上抜けた日にはトレンドテンプレートを満たしておらず、後から満たした銘柄です。日付は上抜けた日ではなく、満たした日です。" : "") +
+    (HIST.latest ? `最新の基準日は ${HIST.latest} で、「現在」はその日の終値とピボットの差です。` : "") + "スクリーニング結果が保存された日だけが対象です。";
+  const tb = $("#hist-list");
+  tb.replaceChildren(
+    h("thead", null, h("tr", null, h("th", null, "ブレイク日"), h("th", {style: "text-align:left"}, "銘柄"), h("th", {style: "text-align:left"}, "状態"), h("th", null, "現在"))),
+    h("tbody", null, list.map(x => {
+      const diff = x.last_close != null && x.pivot ? (x.last_close / x.pivot - 1) * 100 : null;
+      return h("tr", {onclick: () => openDay(x.as_of, x.code)},
+        h("td", null, x.as_of),
+        h("td", {class: "wrap", style: "text-align:left"}, h("div", {class: "nm"}, x.name || x.code, h("small", null, `${x.code}　${x.sector || ""}　RS ${fx(x.rs, 0)}`))),
+        h("td", {class: "wrap", style: "text-align:left"}, h("div", {class: "nm"}, h("span", null, h("span", {class: "pill " + statusClass(x.status)}, x.status)),
+          h("small", null, x.breakout_vol == null ? "出来高 -" : `出来高 ${fx(x.breakout_vol, 1)}倍`))),
+        h("td", null, diff == null ? "-" : h("span", {class: diff >= 0 ? "rpos" : "rneg"}, (diff > 0 ? "+" : "") + fx(diff, 1) + "%"), h("br"),
+          h("small", {class: "muted"}, x.stop != null ? `損切り ${fp(x.stop)}` : "")));
+    })));
+  if (!list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 4}, "該当する銘柄はありません。"))));
+}
+// 行を押すと、その基準日の「VCP判定」で銘柄を開く(チャートと判定の内訳)
+async function openDay(asof, code) {
+  setMode("screen");
+  if (D.as_of !== asof) await loadDay(asof);
+  if (!byCode[code]) return;
+  state.tab = "vcp"; state.reason = null;
+  renderList();
+  select(code);
+}
+
 /* ---------- 表示の切り替え ---------- */
-function setMode(m) {
+function setMode(m, skipRender) {
   state.mode = m;
   try { localStorage.setItem("minervini-mode", m); } catch (e) { /* 無視 */ }
   document.querySelectorAll("#mode button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false"));
-  $("#mode-note").textContent = m === "bt" ? "2021〜2025年のシグナルを、売買まで再現した結果です。売買ルールを切り替えて比べられます。" : "毎営業日のスクリーニング結果です。";
+  $("#mode-note").textContent = m === "bt" ? "2021〜2025年のシグナルを、売買まで再現した結果です。売買ルールを切り替えて比べられます。"
+    : m === "hist" ? "今年のスクリーニングでブレイクした銘柄の一覧です。行を押すと、その日のチャートと判定の内訳を開きます。" : "毎営業日のスクリーニング結果です。";
   $("#counts").hidden = m !== "screen";
+  $("#hist").hidden = m !== "hist";
   CH = null;
-  if (m === "bt") {
+  if (m === "hist") {
+    $("#main").hidden = true; $("#detail").replaceChildren();
+    $("#bt").hidden = true; $("#bt-detail").replaceChildren(); BT.key = null;
+    loadHist();
+  } else if (m === "bt") {
     $("#main").hidden = true; $("#detail").replaceChildren();
     $("#bt").hidden = false;
-    if (BT.loaded) renderBT(); else loadBT();
+    if (BT.loaded) { if (!skipRender) renderBT(); } else loadBT();
   } else {
     $("#bt").hidden = true; $("#bt-detail").replaceChildren(); BT.key = null;
     if (stocks.length) { $("#main").hidden = false; state.code = null; renderList(); } else boot();
@@ -951,13 +1146,17 @@ document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click
   try { localStorage.setItem("minervini-tab", state.tab); } catch (e) { /* 無視 */ }
   renderList();
 }));
-document.addEventListener("pointermove", e => { if (e.target.closest && e.target.closest("#chart")) hover(e); else if (CH) { CH.cross.setAttribute("visibility", "hidden"); $("#tip").style.display = "none"; } });
 let rz = 0; addEventListener("resize", () => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => {
   if (state.mode === "bt") { const x = BT.rows.find(r => btKey(r) === BT.key); if (x) drawChart(x); }
-  else if (state.code && state.tab !== "near") drawChart(byCode[state.code]); }); });
+  else if (state.mode === "screen" && state.code && state.tab !== "near") drawChart(byCode[state.code]); }); });
 document.querySelectorAll("#mode button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.m)));
 document.querySelectorAll("#bt-result button").forEach(b => b.addEventListener("click", () => { BT.result = b.dataset.r; renderBT(); }));
 $("#bt-variant").addEventListener("change", e => { BT.variant = e.target.value; BT.key = null; loadVariant(BT.variant); });
 $("#bt-sort").addEventListener("change", e => { BT.sort = e.target.value; renderBT(); });
+document.querySelectorAll("#hist-vol button").forEach(b => b.addEventListener("click", () => { HIST.vol = b.dataset.v; renderHist(); }));
+$("#hist-sort").addEventListener("change", e => { HIST.sort = e.target.value; renderHist(); });
+$("#hist-q").addEventListener("input", e => { HIST.q = e.target.value; renderHist(); });
 setMode(state.mode);
 </script>
+
+</body></html>
