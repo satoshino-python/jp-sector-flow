@@ -185,7 +185,7 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
         <button type="button" data-l="all" aria-pressed="true">後追いも含む</button>
         <button type="button" data-l="hide" aria-pressed="false">後追いを除く</button>
       </div>
-      <label for="hist-sort">並び <select id="hist-sort"><option value="new">新しい順</option><option value="old">古い順</option><option value="rs">RSの高い順</option><option value="vol">出来高の多い順</option></select></label>
+      <label for="hist-sort">並び <select id="hist-sort"><option value="new">新しい順</option><option value="old">古い順</option><option value="rs">RSの高い順</option><option value="vol">出来高の多い順</option><option value="pl">損益の大きい順</option></select></label>
       <label for="hist-q">検索 <input id="hist-q" type="search" placeholder="銘柄名・コード" style="font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--axis);border-radius:6px;background:var(--surface);color:var(--fg)"></label>
     </div>
     <p class="note" id="hist-note"></p>
@@ -1033,24 +1033,31 @@ function renderBTDetail(x) {
 
 /* ---------- 今年のブレイク一覧(minervini_screen の日々の判定から) ---------- */
 // VCPと判定され、状態が「ブレイク…」になった銘柄を、基準日の最新が属する年の分だけ並べる。
-// 同じ状態が続く間は最初の日だけ(状態が変わったら、その日も出す)。「現在」は最新の基準日の終値。
+// 同じ状態が続く間は最初の日だけ(状態が変わったら、その日も出す)。エントリーは判定日の翌営業日の始値、損益は最新の終値で見る。
 const HIST = {rows: null, vol: "all", late: "all", q: "", sort: "new", latest: null};
 try { if (localStorage.getItem("minervini-hist-late") === "hide") HIST.late = "hide"; } catch (e) { /* 無視 */ }
 async function loadHist() {
   if (!HIST.rows) {
     banner(["今年のブレイクを BigQuery から読み込んでいます…", ""]);
     try {
-      const S = T("minervini_screen");
+      const S = T("minervini_screen"), PR = T("prices");
+      // エントリー = 判定日の翌営業日の始値、損益 = 最新の終値との差。どちらも prices の配当調整後の値(チャートと同じ)
       HIST.rows = await bq(`WITH s AS (
           SELECT as_of, code, name, sector, status, rs, pivot, stop, risk_pct, breakout_vol, close, vcp,
             LAG(status) OVER (PARTITION BY code ORDER BY as_of) AS prev
           FROM ${S} WHERE as_of >= DATE_TRUNC((SELECT MAX(as_of) FROM ${S}), YEAR)),
-        l AS (SELECT code, close AS last_close, status AS last_status FROM ${S} WHERE as_of = (SELECT MAX(as_of) FROM ${S}))
-        SELECT CAST(s.as_of AS STRING) AS as_of, s.code, s.name, s.sector, s.status, s.rs, s.pivot, s.stop, s.risk_pct, s.breakout_vol, s.close,
-          l.last_close, l.last_status, CAST((SELECT MAX(as_of) FROM ${S}) AS STRING) AS latest
-        FROM s LEFT JOIN l ON s.code = l.code
-        WHERE s.vcp AND s.status LIKE 'ブレイク%' AND (s.prev IS NULL OR s.prev != s.status)
-        ORDER BY s.as_of DESC, s.code`);
+        b AS (SELECT * FROM s WHERE vcp AND status LIKE 'ブレイク%' AND (prev IS NULL OR prev != status)),
+        p AS (
+          SELECT code, date, adj_close, open * adj_close / NULLIF(close, 0) AS o,
+            LAG(date) OVER (PARTITION BY code ORDER BY date) AS prev_date
+          FROM ${PR} WHERE code IN (SELECT code FROM b) AND date >= (SELECT MIN(as_of) FROM b) AND adj_close IS NOT NULL),
+        lp AS (SELECT code, ARRAY_AGG(STRUCT(date, adj_close) ORDER BY date DESC LIMIT 1)[OFFSET(0)] AS x FROM p GROUP BY code)
+        SELECT CAST(b.as_of AS STRING) AS as_of, b.code, b.name, b.sector, b.status, b.rs, b.pivot, b.stop, b.risk_pct, b.breakout_vol, b.close,
+          CAST(e.date AS STRING) AS entry_date, e.o AS entry, lp.x.adj_close AS last_px, CAST(lp.x.date AS STRING) AS last_date,
+          CAST((SELECT MAX(as_of) FROM ${S}) AS STRING) AS latest
+        FROM b LEFT JOIN p e ON e.code = b.code AND e.prev_date = b.as_of
+        LEFT JOIN lp ON lp.code = b.code
+        ORDER BY b.as_of DESC, b.code`);
       HIST.latest = HIST.rows.length ? HIST.rows[0].latest : null;
     } catch (e) {
       const t = errorText(e);
@@ -1064,6 +1071,7 @@ async function loadHist() {
 }
 const volShort = x => /不足/.test(x.status || "");
 const isLate = x => x.status === LATE;
+const plPct = x => x.entry != null && x.last_px != null ? (x.last_px / x.entry - 1) * 100 : null;
 function renderHist() {
   if (!HIST.rows) return;
   document.querySelectorAll("#hist-vol button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === HIST.vol ? "true" : "false"));
@@ -1071,27 +1079,31 @@ function renderHist() {
   document.querySelectorAll("#hist-late button").forEach(b => b.setAttribute("aria-pressed", b.dataset.l === HIST.late ? "true" : "false"));
   let list = HIST.rows.filter(x => (HIST.vol === "all" || !volShort(x)) && (HIST.late === "all" || !isLate(x)) &&(!q || ((x.name || "") + " " + x.code).toLowerCase().includes(q)));
   const by = {new: (a, b) => b.as_of.localeCompare(a.as_of) || (b.rs ?? 0) - (a.rs ?? 0), old: (a, b) => a.as_of.localeCompare(b.as_of) || (b.rs ?? 0) - (a.rs ?? 0),
-    rs: (a, b) => (b.rs ?? 0) - (a.rs ?? 0), vol: (a, b) => (b.breakout_vol ?? -1) - (a.breakout_vol ?? -1)}[HIST.sort];
+    rs: (a, b) => (b.rs ?? 0) - (a.rs ?? 0), vol: (a, b) => (b.breakout_vol ?? -1) - (a.breakout_vol ?? -1),
+    pl: (a, b) => (plPct(b) ?? -1e9) - (plPct(a) ?? -1e9)}[HIST.sort];
   list = [...list].sort(by);
   const nshort = list.filter(volShort).length, nlate = list.filter(isLate).length;
   const yr = (HIST.latest || D.dates[0] || "").slice(0, 4);
   $("#hist-note").textContent = `${yr}年のスクリーニングで、VCPと判定されてブレイクした銘柄です。${list.length}件(出来高OK ${list.length - nshort - nlate}件、出来高不足 ${nshort}件、後追い ${nlate}件)。` +
     (nlate ? "後追いは、ピボットを上抜けた日にはトレンドテンプレートを満たしておらず、後から満たした銘柄です。日付は上抜けた日ではなく、満たした日です。" : "") +
-    (HIST.latest ? `最新の基準日は ${HIST.latest} で、「現在」はその日の終値とピボットの差です。` : "") + "スクリーニング結果が保存された日だけが対象です。";
+    "エントリーはブレイクと判定された日の翌営業日の始値、損益はエントリーから最新の終値までの値幅です(配当調整後の価格)。" +
+    (HIST.latest ? `最新の基準日は ${HIST.latest} です。` : "") + "スクリーニング結果が保存された日だけが対象です。";
   const tb = $("#hist-list");
   tb.replaceChildren(
-    h("thead", null, h("tr", null, h("th", null, "ブレイク日"), h("th", {style: "text-align:left"}, "銘柄"), h("th", {style: "text-align:left"}, "状態"), h("th", null, "現在"))),
+    h("thead", null, h("tr", null, h("th", null, "ブレイク日"), h("th", {style: "text-align:left"}, "銘柄"), h("th", {style: "text-align:left"}, "状態"), h("th", null, "エントリー"), h("th", null, "損益"))),
     h("tbody", null, list.map(x => {
-      const diff = x.last_close != null && x.pivot ? (x.last_close / x.pivot - 1) * 100 : null;
+      const diff = plPct(x);
       return h("tr", {onclick: () => openDay(x.as_of, x.code)},
         h("td", null, x.as_of),
         h("td", {class: "wrap", style: "text-align:left"}, h("div", {class: "nm"}, x.name || x.code, h("small", null, `${x.code}　${x.sector || ""}　RS ${fx(x.rs, 0)}`))),
         h("td", {class: "wrap", style: "text-align:left"}, h("div", {class: "nm"}, h("span", null, h("span", {class: "pill " + statusClass(x.status)}, x.status)),
           h("small", null, x.breakout_vol == null ? "出来高 -" : `出来高 ${fx(x.breakout_vol, 1)}倍`))),
-        h("td", null, diff == null ? "-" : h("span", {class: diff >= 0 ? "rpos" : "rneg"}, (diff > 0 ? "+" : "") + fx(diff, 1) + "%"), h("br"),
-          h("small", {class: "muted"}, x.stop != null ? `損切り ${fp(x.stop)}` : "")));
+        h("td", null, x.entry == null ? h("span", {class: "muted"}, "翌営業日") : fp(x.entry), h("br"),
+          h("small", {class: "muted"}, x.entry_date ? `${x.entry_date.slice(5).replace("-", "/")} 始値` : "未約定")),
+        h("td", null, diff == null ? "-" : h("span", {class: diff >= 0 ? "rpos" : "rneg"}, `${diff > 0 ? "+" : ""}${fp(x.last_px - x.entry)}`), h("br"),
+          h("small", {class: "muted"}, diff == null ? (x.stop != null ? `損切り ${fp(x.stop)}` : "") : `${diff > 0 ? "+" : ""}${fx(diff, 1)}%`)));
     })));
-  if (!list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 4}, "該当する銘柄はありません。"))));
+  if (!list.length) tb.append(h("tbody", null, h("tr", null, h("td", {colspan: 5}, "該当する銘柄はありません。"))));
 }
 // 行を押すと、その基準日の「VCP判定」で銘柄を開く(チャートと判定の内訳)
 async function openDay(asof, code) {
