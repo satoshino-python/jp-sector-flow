@@ -37,11 +37,18 @@
 
 ## 検証用ページ(artifact/minervini.html)
 
-- Claude のアーティファクト https://claude.ai/artifact/2rRdaecUy6vdJw6ziDaMji(非公開)。このファイルをそのまま公開する(埋め込むデータはない)
+- Claude のアーティファクト <https://claude.ai/artifact/2rRdaecUy6vdJw6ziDaMji> (非公開)。このファイルをそのまま公開する(埋め込むデータはない)
 - `mcp` capability で、閲覧者の Google Cloud BigQuery コネクタ(`execute_sql_readonly`, `get_query_results`)を使って `minervini_screen`・`minervini_backtest`・`prices` を読む。再公開時は capabilities を省略すると引き継がれる
 - 「日々のスクリーニング」と「バックテスト」の2つの表示がある。バックテストは件数が多いので、ルールごとに一覧の列だけを読み、選んだトレードの詳細は後から読む
 - 動作確認は、`window.claude.use("mcp")` を差し替える模擬スクリプトを Playwright の `add_init_script` で入れ、`page.route` で配信したページを開いて行う(`set_content` では差し替えが効かない)
 - 業種ダッシュボードの共有版は別物: `artifact/snapshot.template.html` + `artifact/build.py`(データは孤立ブランチ `snapshot` の JSON を埋め込む)
+
+## 売買シミュレーション(artifact/minervini_sim.html)
+
+- Claude のアーティファクト <https://claude.ai/artifact/JEMSAY8QrhXoj398ShtSP4> (非公開)。検証用ページと同じく `mcp` capability で BigQuery を読む。このファイルをそのまま公開する
+- 日々の「ブレイク」(`minervini_screen`)はページの中で売買を再現する(`replayDaily` は `minervini_backtest.py` の `simulate` と同じ手順)。バックテストのシグナルは `minervini_backtest` の売買に資金の制約だけを加える
+- `simulate` 側の売買ルールや `src/minervini.py` の資金管理の定数を変えたら、ページの `P`・`replayDaily` と README も合わせる
+- 動作確認は検証用ページと同じ方法(模擬スクリプト + `page.route`)
 
 ## 作業の進め方
 
