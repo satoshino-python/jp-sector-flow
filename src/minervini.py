@@ -24,6 +24,7 @@
          ベースの中で最も浅く(途中で一度深くなってもよい)、最初の FINAL_VS_FIRST 倍以下、
          直近の出来高が50日平均より細っていれば VCP とみなす
        ・ピボット = 最後の収縮の起点の高値。終値がこれを出来高を伴って上抜けたら買い
+       ・上抜けた日にテンプレートを満たしておらず、後から満たした銘柄は「ブレイク済み(後追い)」(買わない)
   3. 損切り(銘柄ごとのボラティリティを加味)
        ・構造上の損切り = 最後の収縮の安値 − STOP_ATR_BUFFER × ATR
        ・ノイズで刈られない最低幅 = エントリー − STOP_ATR_MIN × ATR
@@ -86,6 +87,7 @@ MAX_DRYUP_RATIO = 0.85     # 直近の平均出来高 / 50日平均 がこれ以
 BREAKOUT_VOL_RATIO = 1.4   # ブレイク当日の出来高 / 50日平均 がこれ以上なら出来高を伴うブレイク
 MAX_CHASE = 0.05           # ピボットからこれ以上離れたら追いかけない(伸びすぎ)
 NEAR_PIVOT = 0.05          # ピボットの手前この範囲なら「ピボット接近」
+LATE_BREAKOUT = "ブレイク済み(後追い)"   # ピボットを上抜けた日はテンプレート未達で、後から満たした銘柄の状態
 
 # --- 損切り・資金管理 ---
 STOP_ATR_BUFFER = 0.5      # 最後の収縮の安値から、さらに ATR のこの倍だけ下に置く
@@ -326,10 +328,11 @@ def entry_status(v: Vcp, close: pd.Series, volume: pd.Series) -> tuple[str, floa
     if last <= v.pivot:
         dist = v.pivot / last - 1
         return ("ピボット接近" if dist <= NEAR_PIVOT else "ベース形成中"), np.nan, -1
-    # 終値が初めてピボットを上抜けた日(直近 BREAKOUT_LOOKBACK 日の中で、それより前は下にいた日)
+    # 終値が初めてピボットを上抜けた日(それより前の日は終値がピボット以下)。
+    # ベースの中には必ずピボットより下の終値があるので、日数の上限なしで遡っても止まる
     above = c > v.pivot
     k = len(c) - 1
-    while k > 0 and above[k - 1] and len(c) - 1 - k < BREAKOUT_LOOKBACK:
+    while k > 0 and above[k - 1]:
         k -= 1
     days = len(c) - 1 - k
     vr = vol[k] / avg[k] if avg[k] and avg[k] > 0 else np.nan
@@ -375,6 +378,7 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame,
     tt = tt[tt["close"].notna()]
 
     rows = []
+    tt_hist = None   # 全営業日のテンプレート判定(ブレイク日に満たしていたかを見るため。必要になったら計算)
     for code in tt.index[tt["tt_pass"]]:
         hi, lo, cl, vo = (p[k][code].dropna() for k in ["high", "low", "close", "volume"])
         idx = cl.index
@@ -393,11 +397,19 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame,
                "dry_from": day(max(v.dry_end - DRYUP_DAYS, 0)) if v.dry_end > 0 else None,
                "dry_to": day(v.dry_end - 1) if v.dry_end > 0 else None}
         if v.ok:
-            status, vr, _ = entry_status(v, cl, vo)
+            status, vr, days = entry_status(v, cl, vo)
+            # ブレイクした日にテンプレートを満たしていなかった銘柄は、今日テンプレートを満たしても
+            # 新しいブレイクではない(遅れて候補に入っただけ)。「ブレイク済み(後追い)」として買いの対象から外す
+            if days > 0 and not status.startswith("伸びすぎ"):
+                if tt_hist is None:
+                    tt_hist = trend_template_panel(p)["tt_pass"]
+                bday = idx[len(idx) - 1 - days]
+                if not bool(tt_hist.at[bday, code]):
+                    status = LATE_BREAKOUT
             row.update({"status": status, "breakout_vol": vr,
                         "to_pivot_pct": (v.pivot / cl.iloc[-1] - 1) * 100})
             row.update(plan_trade(v, cl.iloc[-1], a, cl.iloc[-1] > v.pivot, equity))
-            if not row["risk_ok"] and not status.startswith("伸びすぎ"):
+            if not row["risk_ok"] and status not in (LATE_BREAKOUT,) and not status.startswith("伸びすぎ"):
                 row["status"] = "リスク過大(見送り)"
         rows.append(row)
 
@@ -410,7 +422,7 @@ def screen(prices: pd.DataFrame, uni: pd.DataFrame,
                        on="sector")
     order = {"ブレイク": 0, "ピボット接近": 1}
     out["_o"] = out.get("status", pd.Series(index=out.index, dtype=object)).map(
-        lambda s: 0 if isinstance(s, str) and s.startswith("ブレイク") and "不足" not in s
+        lambda s: 0 if isinstance(s, str) and s.startswith("ブレイク") and "不足" not in s and s != LATE_BREAKOUT
         else order.get(s, 2) if isinstance(s, str) else 3)
     out = out.sort_values(["_o", "rs"], ascending=[True, False]).drop(columns="_o")
     out.index.name = "code"
