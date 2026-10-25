@@ -3,7 +3,7 @@
 使い方(BigQuery の株価を使うので、認証のある GitHub Actions の minervini-backtest で動かす):
     python src/minervini_backtest.py --start 2021-01-01 --end 2025-12-31 --save
 
-売買のルール(VARIANTS の3通りを比べる):
+売買のルール(VARIANTS の4通りを比べる):
   シグナル ... その日にトレンドテンプレートを満たし、
                 vcp_pivot       ... VCP と判定され、終値が出来高を伴ってピボットを初めて上抜けた(daily の「ブレイク」)日
                 vcp_pivot_anyvol ... 上の出来高の条件を外したもの(daily の「ブレイク(出来高不足)」の当日も含む)
