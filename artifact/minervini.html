@@ -1047,7 +1047,8 @@ function renderBTDetail(x) {
 
 /* ---------- 今年のブレイク一覧(minervini_screen の日々の判定から) ---------- */
 // VCPと判定され、状態が「ブレイク…」になった銘柄を、基準日の最新が属する年の分だけ並べる。
-// 同じ状態が続く間は最初の日だけ(状態が変わったら、その日も出す)。エントリーは判定日の翌営業日の始値、損益は最新の終値で見る。
+// 同じピボットのブレイクは1件にまとめ、最初の日だけを出す(途中で1日だけ VCP 判定が外れて戻った場合や、状態の表記が変わった場合も同じブレイク)。
+// ピボットが変わったら別のブレイクとして出す。エントリーは判定日の翌営業日の始値、損益は最新の終値で見る。
 const HIST = {rows: null, vol: "all", late: "all", q: "", sort: "new", latest: null};
 try { if (localStorage.getItem("minervini-hist-late") === "hide") HIST.late = "hide"; } catch (e) { /* 無視 */ }
 async function loadHist() {
@@ -1057,10 +1058,10 @@ async function loadHist() {
       const S = T("minervini_screen"), PR = T("prices");
       // エントリー = 判定日の翌営業日の始値、損益 = 最新の終値との差。どちらも prices の配当調整後の値(チャートと同じ)
       HIST.rows = await bq(`WITH s AS (
-          SELECT as_of, code, name, sector, status, rs, pivot, stop, risk_pct, breakout_vol, close, vcp,
-            LAG(status) OVER (PARTITION BY code ORDER BY as_of) AS prev
-          FROM ${S} WHERE as_of >= DATE_TRUNC((SELECT MAX(as_of) FROM ${S}), YEAR)),
-        b AS (SELECT * FROM s WHERE vcp AND status LIKE 'ブレイク%' AND (prev IS NULL OR prev != status)),
+          SELECT as_of, code, name, sector, status, rs, pivot, stop, risk_pct, breakout_vol, close
+          FROM ${S} WHERE as_of >= DATE_TRUNC((SELECT MAX(as_of) FROM ${S}), YEAR) AND vcp AND status LIKE 'ブレイク%'),
+        b AS (SELECT * FROM s
+          QUALIFY LAG(ROUND(pivot, 2)) OVER (PARTITION BY code ORDER BY as_of) IS DISTINCT FROM ROUND(pivot, 2)),
         p AS (
           SELECT code, date, adj_close, open * adj_close / NULLIF(close, 0) AS o,
             LAG(date) OVER (PARTITION BY code ORDER BY date) AS prev_date
