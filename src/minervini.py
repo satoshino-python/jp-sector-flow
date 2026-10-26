@@ -242,6 +242,26 @@ def zigzag(high: np.ndarray, low: np.ndarray, th: float, first: str = "H") -> li
     return pts
 
 
+def merge_rising_swings(pts: list[tuple[str, int, float]]) -> list[tuple[str, int, float]]:
+    """確定した転換点の列から、上昇の途中の押し(高値と、その後の安値)を取り除く。
+
+    安値 → 高値 → 押し(前の安値より上) → より高い高値 は、安値と高値を切り上げている上昇の途中の揺れで、収縮ではない。
+    反転幅の境目にある押しは、日々の ATR の変化で数えたり数えなかったりして判定が1日だけ外れるので
+    (カシオ 2026-10-22)、形で除く。押しが前の安値を割っていたら上昇ではないので残す(東京精密のような、
+    安値を切り下げる深い下げを最初の収縮に混ぜて隠さないため)。先頭(ベースの起点の高値)は抜かれないので残る。
+    """
+    pts = list(pts)
+    i = 1
+    while i + 2 < len(pts):
+        if (pts[i][0] == "H" and pts[i + 2][0] == "H" and pts[i + 2][2] > pts[i][2]
+                and pts[i + 1][2] >= pts[i - 1][2]):
+            del pts[i:i + 2]
+            i = max(i - 2, 1)          # つないだ結果、手前の高値も抜かれたかもしれないので戻って見直す
+        else:
+            i += 1
+    return pts
+
+
 @dataclass
 class Vcp:
     ok: bool = False
@@ -276,7 +296,8 @@ def detect_vcp(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Ser
     k0 = coarse[-1][1]
     fine = zigzag(h[start + k0:], l[start + k0:], max(ZZ_FINE_MIN_PCT, ZZ_FINE_ATR_MULT * atr_pct), first=coarse[-1][0])
     pts = coarse[:-1] + [(t, k0 + i, val) for t, i, val in fine]
-    confirmed, last = pts[:-1], pts[-1]
+    confirmed, last = merge_rising_swings(pts[:-1]), pts[-1]
+    pts = confirmed + [last]
     # 高値→安値 の組を収縮とする。最後が「確定した高値+進行中の安値」なら、それも収縮に数える
     seq = confirmed + ([last] if last[0] == "L" else [])
     highs = [p for p in seq if p[0] == "H"]
