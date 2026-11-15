@@ -9,6 +9,8 @@ BigQuery にはつながない。bq_sync.py の反映と同じ時点の prices.p
               点は [日付の番号, 始値, 高値, 安値, 終値, 売買代金(百万円)]。日付の番号は dates の添字。
               始値・高値・安値・終値はすべて配当調整後の水準(終値 = adj_close、始値・高値・安値は
               分割調整のみの値に adj_close / close を掛けたもの)。始値などがない行は null
+    l33     ... 東証33業種の rows / series / stocks(形は上と同じ)。ファイルを小さくするため、
+              17業種の stocks にすでにある銘柄は pts を省く(ページ側で17業種の分から引く)
 """
 from __future__ import annotations
 
@@ -45,9 +47,7 @@ def _px(v):
     return round(v, 1 if abs(v) >= 1000 else 2)
 
 
-def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now: datetime) -> dict:
-    res = compute(prices, uni, nav)
-
+def _rows_series(res, now: datetime) -> tuple[list, dict]:
     summ = build_summary(res, now)
     rows = []
     for rec in summ.to_dict("records"):
@@ -73,6 +73,14 @@ def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now
                            "s": _num(s, 3), "z": _num(z, 3)}
                           for d, c, e, w, s, z in zip(g["date"], g["rs_cw"], g["rs_etf"], g["rs_ew"],
                                                       g["share5_pct"], g["share_z"])]
+    return rows, series
+
+
+def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now: datetime) -> dict:
+    res = compute(prices, uni, nav)
+    rows, series = _rows_series(res, now)
+    res33 = compute(prices, uni, None, level="33")
+    rows33, series33 = _rows_series(res33, now)
 
     # 構成銘柄
     p = prices.copy()
@@ -93,19 +101,31 @@ def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now
     dates = sorted(p[p["rn"] <= STOCK_DAYS]["date"].unique())
     didx = {pd.Timestamp(d): i for i, d in enumerate(dates)}
     avg20 = p[p["rn"] <= 20].groupby("code")["turnover"].mean()
-    stocks: dict[str, dict] = {}
     by_code = {c: g for c, g in p[p["rn"] <= STOCK_DAYS].groupby("code")}
-    for sector, g in stk.groupby("sector"):
-        codes = [c for c in g["code"] if c in by_code]
-        codes.sort(key=lambda c: -(avg20.get(c) if pd.notna(avg20.get(c)) else -1))
-        names = dict(zip(g["code"], g["name"]))
-        lst = []
-        for c in codes[:STOCK_LIMIT]:
-            d = by_code[c]
-            pts = [[didx[pd.Timestamp(dt)], _px(o), _px(h), _px(lo), _px(a), None if pd.isna(t) else int(round(t / 1e6))]
-                   for dt, o, h, lo, a, t in zip(d["date"], d["open"], d["high"], d["low"], d["adj_close"], d["turnover"])]
-            lst.append({"code": c, "name": names.get(c, c), "pts": pts})
-        stocks[sector] = {"total": len(g), "list": lst}
+
+    def stock_lists(col: str, skip: set) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        st = stk[stk[col].notna() & (stk[col].astype(str).str.strip() != "")]
+        for sector, g in st.groupby(col):
+            codes = [c for c in g["code"] if c in by_code]
+            codes.sort(key=lambda c: -(avg20.get(c) if pd.notna(avg20.get(c)) else -1))
+            names = dict(zip(g["code"], g["name"]))
+            lst = []
+            for c in codes[:STOCK_LIMIT]:
+                item = {"code": c, "name": names.get(c, c)}
+                if c not in skip:
+                    d = by_code[c]
+                    item["pts"] = [[didx[pd.Timestamp(dt)], _px(o), _px(h), _px(lo), _px(a),
+                                    None if pd.isna(t) else int(round(t / 1e6))]
+                                   for dt, o, h, lo, a, t in zip(d["date"], d["open"], d["high"], d["low"],
+                                                                 d["adj_close"], d["turnover"])]
+                lst.append(item)
+            out[sector] = {"total": len(g), "list": lst}
+        return out
+
+    stocks = stock_lists("sector", set())
+    in17 = {x["code"] for v in stocks.values() for x in v["list"]}
+    stocks33 = stock_lists("sector33", in17)
 
     return {
         "as_of": res.as_of.date().isoformat(),
@@ -114,6 +134,7 @@ def build(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None, now
         "rows": rows,
         "series": series,
         "stocks": stocks,
+        "l33": {"rows": rows33, "series": series33, "stocks": stocks33},
     }
 
 
@@ -125,7 +146,8 @@ def main() -> int:
     snap = build(prices, uni, nav, now)
     OUT.write_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     n_st = sum(len(v["list"]) for v in snap["stocks"].values())
-    print(f"snapshot: 基準日 {snap['as_of']} / 業種 {len(snap['rows'])} / 銘柄 {n_st} / {OUT.stat().st_size/1024:.0f} KB")
+    print(f"snapshot: 基準日 {snap['as_of']} / 業種 {len(snap['rows'])} / 33業種 {len(snap['l33']['rows'])}"
+          f" / 銘柄 {n_st} / {OUT.stat().st_size/1024:.0f} KB")
     return 0
 
 

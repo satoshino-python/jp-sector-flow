@@ -1,6 +1,6 @@
 <title>業種別 資金動向 共有版</title>
 <style>
-/* 構成: 上から 見出し → Claudeの見立て → 判定の内訳(ヒーロー) → ヒートマップ → 散布図 → 推移 → ETF比較 → 一覧 → 構成銘柄。
+/* 構成: 上から 見出し → Claudeの見立て → 判定の内訳(ヒーロー) → ヒートマップ → 散布図 → 推移 → ETF比較 → 一覧 → 構成銘柄。見出しの切り替えで TOPIX-17業種 / 東証33業種(SNAP.l33)を入れ替える。
    色は 検証済みの8色(線・棒)と、赤(強い)↔青(弱い)の発散(ヒートマップ・棒)。日本の相場の慣習に合わせ、赤が上昇・強い側。 */
 :root{
   --bg:#f9f9f7; --surface:#fcfcfb; --fg:#0b0b0b; --fg2:#52514e; --muted:#898781;
@@ -107,6 +107,10 @@ svg text{font-family:var(--sans);fill:var(--fg2)}
 .seg button+button{border-left:1px solid var(--axis)}
 .seg button[aria-pressed="true"]{background:var(--wash);font-weight:700}
 .seg .short{display:none}
+#level{margin-top:8px} #level[hidden]{display:none}
+#level button{font-size:13px;padding:5px 14px}
+body.l33 .etf-only{display:none !important}
+.few{color:var(--warn);font-size:11px;margin-left:4px}
 @media (max-width:560px){.seg{display:flex;width:100%}.seg button{flex:1;padding:6px 4px}.seg .full{display:none}.seg .short{display:inline}}
 .chart{position:relative;min-width:0}
 .dim{opacity:.5;transition:opacity .15s}
@@ -161,7 +165,11 @@ details.table-view summary{cursor:pointer;color:var(--fg2)}
   <header>
     <div>
       <h1>業種別 資金動向</h1>
-      <p class="note">日本株 TOPIX-17業種。TOPIX構成銘柄(約500銘柄)から作った業種ごとの指数と売買代金で、どこへ資金が向かっているかを見ます。</p>
+      <p class="note" id="lead">日本株 TOPIX-17業種。TOPIX構成銘柄(約500銘柄)から作った業種ごとの指数と売買代金で、どこへ資金が向かっているかを見ます。</p>
+      <div class="seg" id="level" role="group" aria-label="業種の分け方" hidden>
+        <button type="button" data-l="17" aria-pressed="true">TOPIX-17業種</button>
+        <button type="button" data-l="33" aria-pressed="false">東証33業種</button>
+      </div>
     </div>
     <div class="stamp">
       <span id="stamp-asof">基準日 -</span>
@@ -197,7 +205,7 @@ details.table-view summary{cursor:pointer;color:var(--fg2)}
       <div class="seg" id="measure" role="group" aria-label="指標">
         <button type="button" data-m="c" aria-pressed="true"><span class="full">相対強度(時価総額加重)</span><span class="short">時価総額</span></button>
         <button type="button" data-m="w" aria-pressed="false"><span class="full">相対強度(均等加重)</span><span class="short">均等</span></button>
-        <button type="button" data-m="e" aria-pressed="false"><span class="full">相対強度(ETF、参考)</span><span class="short">ETF</span></button>
+        <button type="button" data-m="e" aria-pressed="false" class="etf-only"><span class="full">相対強度(ETF、参考)</span><span class="short">ETF</span></button>
         <button type="button" data-m="s" aria-pressed="false"><span class="full">売買代金シェア</span><span class="short">売買代金</span></button>
       </div>
     </div>
@@ -213,7 +221,7 @@ details.table-view summary{cursor:pointer;color:var(--fg2)}
     <div class="legend">
       <span class="note"><span class="key-rect" style="background:var(--s1)"></span>時価総額加重 − 全銘柄(主軸)</span>
       <span class="note"><span class="key-rect" style="background:var(--s2)"></span>均等加重 − 全銘柄</span>
-      <span class="note"><span class="key-rect" style="background:var(--muted)"></span>業種ETF − TOPIX(参考)</span>
+      <span class="note etf-only"><span class="key-rect" style="background:var(--muted)"></span>業種ETF − TOPIX(参考)</span>
     </div>
     <div class="cmp" id="cmp"></div>
   </section>
@@ -252,7 +260,12 @@ const LABELS = {
 };
 const LABEL_ORDER = ["資金流入", "買い細り", "売り圧力/転換前", "低調"];
 
-const state = {stockCode: null, stockC: null, rows: [], series: {}, selected: null, measure: "c", picked: new Map(), stocks: {},
+const LEADS = {
+  "17": "日本株 TOPIX-17業種。TOPIX構成銘柄(約500銘柄)から作った業種ごとの指数と売買代金で、どこへ資金が向かっているかを見ます。",
+  "33": "日本株 東証33業種。17業種を細かく分けたもので、業種ETFがないため構成銘柄から作った指数と売買代金だけで見ます。銘柄が少ない業種(5銘柄未満に「少」)は1銘柄の値動きで大きく振れます。",
+};
+const FEW = 5;
+const state = {level: "17", stockCode: null, stockC: null, rows: [], series: {}, selected: null, measure: "c", picked: new Map(), stocks: {},
                loadedAt: null, fetchedAt: null, busy: false};
 
 /* ---------- 小道具 ---------- */
@@ -312,20 +325,39 @@ function setStatus(kind, msg) {
   box.replaceChildren();
   if (kind === "error") box.append(h("div", {class: "state panel"}, h("strong", null, "データを読み込めません"), h("span", null, msg || "")));
 }
+const L33 = SNAP.l33 && SNAP.l33.rows && SNAP.l33.rows.length ? SNAP.l33 : null;
+const PTS = {};      // 銘柄コード → 点。33業種の一覧は、17業種の一覧にある銘柄の点を省いているのでここから引く
+[SNAP.stocks, L33 && L33.stocks].forEach(st => Object.values(st || {}).forEach(v => v.list.forEach(x => { if (x.pts) PTS[x.code] = x.pts; })));
+const src = () => state.level === "33" ? L33 : SNAP;
 function load() {
   if (!SNAP.rows || !SNAP.rows.length) { setStatus("error", "このページにはデータが入っていません。"); return; }
-  state.rows = SNAP.rows;
   state.loadedAt = SNAP.generated_at ? new Date(SNAP.generated_at) : null;
+  $("#level").hidden = !L33;
+  setLevel(state.level);
+}
+function setLevel(lv) {
+  if (lv === "33" && !L33) lv = "17";
+  state.level = lv;
+  document.body.classList.toggle("l33", lv === "33");
+  document.querySelectorAll("#level button").forEach(x => x.setAttribute("aria-pressed", x.dataset.l === lv ? "true" : "false"));
+  $("#lead").textContent = LEADS[lv];
+  const d = src();
+  state.rows = d.rows; state.series = d.series || {}; state.stocks = {};
+  state.picked = new Map(); state.stockCode = null; state.stockC = null;
   state.selected = state.rows[0].sector;
   state.rows.slice(0, 5).forEach(r => pick(r.sector, true));
-  state.series = SNAP.series || {};
+  if (lv === "33" && state.measure === "e") {
+    state.measure = "c";
+    document.querySelectorAll("#measure button").forEach(x => x.setAttribute("aria-pressed", x.dataset.m === "c" ? "true" : "false"));
+  }
   renderAll();
+  loadStocks(state.selected);
 }
 function loadStocks(sector) {
   if (!state.stocks[sector]) {
-    const d = (SNAP.stocks || {})[sector];
+    const d = (src().stocks || {})[sector];
     if (d) {
-      const list = d.list.map(x => ({code: x.code, name: x.name, pts: x.pts.map(p => ({d: SNAP.dates[p[0]], o: p[1], h: p[2], l: p[3], a: p[4], t: p[5] == null ? null : p[5] * 1e6}))}));
+      const list = d.list.filter(x => x.pts || PTS[x.code]).map(x => ({code: x.code, name: x.name, pts: (x.pts || PTS[x.code]).map(p => ({d: SNAP.dates[p[0]], o: p[1], h: p[2], l: p[3], a: p[4], t: p[5] == null ? null : p[5] * 1e6}))}));
       list.total = d.total || list.length;
       state.stocks[sector] = list;
     } else state.stocks[sector] = [];
@@ -378,7 +410,7 @@ function renderHero() {
 }
 
 /* ---------- 描画: ヒートマップ ---------- */
-const HEAT = [
+const HEAT_ALL = [
   ["cw_rel_5d", "相対強度\n5日", v => sg(v)], ["cw_rel_20d", "相対強度\n20日", v => sg(v)], ["ew_rel_20d", "均等加重\n相対20日", v => sg(v)],
   ["share_z", "売買代金\nシェアz", v => sg(v)], ["turn_ratio_1d", "売買代金\n当日/20日", v => fx(v, 2) + "x"],
   ["up_turn_ratio", "上昇日の\n売買比率", v => pc(v * 100)], ["breadth_ma25", "25日線上\n銘柄比率", v => pc(v)],
@@ -392,6 +424,7 @@ function rankPct(vals) {
 }
 function renderHeat() {
   const t = $("#heat"); t.replaceChildren();
+  const HEAT = HEAT_ALL.filter(c => state.level === "17" || c[0] !== "rel_20d");
   const ranks = HEAT.map(c => rankPct(state.rows.map(r => r[c[0]])));
   t.append(h("thead", null, h("tr", null, h("th", {scope: "col"}, "業種"),
     HEAT.map(c => h("th", {scope: "col"}, c[1].split("\n").flatMap((x, i) => i ? [h("br"), x] : [x]))))));
@@ -525,13 +558,14 @@ function renderCmp() {
   const box = $("#cmp"); box.replaceChildren();
   const rows = state.rows.filter(r => r.cw_rel_20d != null).slice().sort((a, b) => b.cw_rel_20d - a.cw_rel_20d);
   if (!rows.length) return;
+  const etf = state.level === "17";
   const mx = Math.max(...rows.flatMap(r => [Math.abs(r.cw_rel_20d), Math.abs(r.ew_rel_20d || 0), Math.abs(r.rel_20d || 0)])) * 1.05 || 1;
   rows.forEach(r => {
     const mk = (cls, v) => { const w = Math.abs(v) / mx * 50; return h("div", {class: "bar " + cls + (v >= 0 ? " p" : " n"), style: v >= 0 ? `left:50%;width:${w}%` : `right:50%;width:${w}%`}); };
     const row = h("div", {class: "cmp-row" + (r.sector === state.selected ? " sel" : ""), tabindex: "0"},
       h("div", {class: "cmp-name"}, r.sector, (r.ew_flag || r.etf_flag) ? h("span", {class: "flag"}, " ⚠") : null),
-      h("div", {class: "cmp-track"}, h("div", {class: "cmp-zero", style: "left:50%"}), mk("cw", r.cw_rel_20d), mk("ew", r.ew_rel_20d || 0), mk("etf", r.rel_20d || 0)));
-    const over = e => showTip(e, r.sector, [{label: "時価総額加重 − 全銘柄", value: sg(r.cw_rel_20d) + "pt", color: "var(--s1)"}, {label: "均等加重 − 全銘柄", value: sg(r.ew_rel_20d) + "pt", color: "var(--s2)"}, {label: "業種ETF − TOPIX(参考)", value: sg(r.rel_20d) + "pt", color: "var(--muted)"}].concat([r.ew_flag, r.etf_flag].filter(Boolean).map(x => ({label: "注意", value: x}))));
+      h("div", {class: "cmp-track"}, h("div", {class: "cmp-zero", style: "left:50%"}), mk("cw", r.cw_rel_20d), mk("ew", r.ew_rel_20d || 0), etf ? mk("etf", r.rel_20d || 0) : null));
+    const over = e => showTip(e, r.sector, [{label: "時価総額加重 − 全銘柄", value: sg(r.cw_rel_20d) + "pt", color: "var(--s1)"}, {label: "均等加重 − 全銘柄", value: sg(r.ew_rel_20d) + "pt", color: "var(--s2)"}].concat(etf ? [{label: "業種ETF − TOPIX(参考)", value: sg(r.rel_20d) + "pt", color: "var(--muted)"}] : [], [r.ew_flag, r.etf_flag].filter(Boolean).map(x => ({label: "注意", value: x}))));
     row.addEventListener("pointermove", over); row.addEventListener("pointerleave", hideTip);
     row.addEventListener("click", () => select(r.sector)); row.addEventListener("keydown", e => { if (e.key === "Enter") select(r.sector); });
     box.append(row);
@@ -541,16 +575,24 @@ function renderCmp() {
 /* ---------- 描画: 一覧 ---------- */
 function renderList() {
   const t = $("#list"); t.replaceChildren();
-  const heads = ["順位", "業種", "判定", "スコア", "相対20日\n(時価総額加重)", "相対20日\n(均等加重)", "相対20日\n(ETF参考)", "注意", "シェアz", "25日線上", "銘柄数", "ETF終値−基準価額\n20日(pt)"];
+  const etf = state.level === "17";
+  const heads = etf
+    ? ["順位", "業種", "判定", "スコア", "相対20日\n(時価総額加重)", "相対20日\n(均等加重)", "相対20日\n(ETF参考)", "注意", "シェアz", "25日線上", "銘柄数", "ETF終値−基準価額\n20日(pt)"]
+    : ["順位", "業種", "判定", "スコア", "相対20日\n(時価総額加重)", "相対20日\n(均等加重)", "相対60日\n(時価総額加重)", "注意", "シェアz", "25日線上", "銘柄数"];
   t.append(h("thead", null, h("tr", null, heads.map((x, i) => h("th", {scope: "col", class: i === 1 ? "sticky" : ""}, x.split("\n").flatMap((y, j) => j ? [h("br"), y] : [y]))))));
   t.append(h("tbody", null, state.rows.map(r => h("tr", {class: r.sector === state.selected ? "sel" : "", tabindex: "0", onclick: () => select(r.sector),
       onkeydown: e => { if (e.key === "Enter") select(r.sector); }},
     h("td", null, String(r.rank)), h("td", {class: "sticky wrapname"}, r.sector), h("td", {style: "text-align:left"}, tagEl(r.cw_label)), h("td", null, fx(r.score, 0)),
-    h("td", null, sg(r.cw_rel_20d)), h("td", null, sg(r.ew_rel_20d)), h("td", null, sg(r.rel_20d)),
+    h("td", null, sg(r.cw_rel_20d)), h("td", null, sg(r.ew_rel_20d)), h("td", null, sg(etf ? r.rel_20d : r.cw_rel_60d)),
     h("td", {style: "text-align:left"}, [r.ew_flag, r.etf_flag].filter(Boolean).map(x => h("span", {class: "flag", style: "display:block"}, "⚠ " + x))),
-    h("td", null, sg(r.share_z, 2)), h("td", null, pc(r.breadth_ma25)), h("td", null, String(r.n_stocks)),
-    h("td", null, r.dev_20d == null ? "-" : sg(r.dev_20d, 2), r.nav_flag ? h("span", {class: "flag"}, " ⚠ " + r.nav_flag) : null)))));
+    h("td", null, sg(r.share_z, 2)), h("td", null, pc(r.breadth_ma25)),
+    h("td", null, String(r.n_stocks), !etf && r.n_stocks < FEW ? h("span", {class: "few"}, "少") : null),
+    etf ? h("td", null, r.dev_20d == null ? "-" : sg(r.dev_20d, 2), r.nav_flag ? h("span", {class: "flag"}, " ⚠ " + r.nav_flag) : null) : null))));
   const nav = state.rows.map(r => r.nav_date).filter(Boolean).sort().pop();
+  if (!etf) {
+    $("#list-note").textContent = "判定・スコアの作り方は17業種と同じですが、順位は33業種の中で付けています。33業種には業種ETFがないため、ETFとの比較と基準価額の突き合わせはありません。均等加重と符号が食い違う業種に注意を、銘柄数が" + FEW + "未満の業種に「少」を付けています。";
+    return;
+  }
   $("#list-note").textContent = "相対強度は、構成銘柄から作った時価総額加重の業種指数を全銘柄の同じ指数と比べたものです。ウエイトはJPX公表のTOPIXウエイト(月末)を値動きで動かしています。均等加重またはETFと符号が食い違う業種に注意を付けています。" +
     (nav ? " ETFの終値と基準価額(分配金再投資)の突き合わせ基準日: " + nav + "。差が0.5ptを超える、または符号が食い違う業種に⚠を付けています。" : " 基準価額を取得できなかったため、終値のみで算出しています。");
 }
@@ -714,7 +756,7 @@ function renderDrill(loading) {
   $("#drill-title").textContent = sec ? "構成銘柄: " + sec : "構成銘柄";
   const meta = $("#drill-meta"); meta.replaceChildren();
   if (r) meta.append(tagEl(r.cw_label), h("span", null, "スコア ", h("b", null, fx(r.score, 0))), h("span", null, "相対20日 ", h("b", null, sg(r.cw_rel_20d) + "pt")),
-    h("span", null, "均等加重 ", h("b", null, sg(r.ew_rel_20d) + "pt")), h("span", null, "ETF参考 ", h("b", null, sg(r.rel_20d) + "pt")));
+    h("span", null, "均等加重 ", h("b", null, sg(r.ew_rel_20d) + "pt")), state.level === "17" ? h("span", null, "ETF参考 ", h("b", null, sg(r.rel_20d) + "pt")) : h("span", null, "銘柄数 ", h("b", null, String(r.n_stocks))));
   box.replaceChildren();
   const d = state.stocks[sec];
   if (loading || d === undefined) { box.append(h("div", {class: "state"}, "構成銘柄を読み込んでいます…")); return; }
@@ -758,6 +800,10 @@ function renderComment(items) {
 /* ---------- 全体 ---------- */
 function renderAll() { renderStamp(); renderHero(); renderHeat(); renderScatter(); renderLegend(); renderLines(); renderCmp(); renderList(); renderDrill(); }
 
+$("#level").addEventListener("click", e => {
+  const b = e.target.closest("button[data-l]"); if (!b || b.dataset.l === state.level) return;
+  setLevel(b.dataset.l);
+});
 $("#measure").addEventListener("click", e => {
   const b = e.target.closest("button[data-m]"); if (!b) return;
   state.measure = b.dataset.m;
@@ -770,6 +816,5 @@ new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if (state.r
 (function init() {
   renderComment(SNAP.comments);
   load();
-  loadStocks(state.selected);
 })();
 </script>
