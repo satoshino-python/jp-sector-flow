@@ -9,7 +9,18 @@
 - **広がり**: 業種内の25日線上銘柄比率、上昇日の売買代金比率
 - **自前の業種指数(主軸)**: 構成銘柄の調整後終値から、時価総額加重(JPX公表のTOPIXウエイトを使用)と均等加重の業種指数を作ります。相対強度・判定・スコアは時価総額加重の指数を全銘柄の同じ指数と比べたものです。業種ETFとTOPIXの比較は参考値として残しています
 - **対象銘柄**: JPXが毎月公表するTOPIX構成銘柄のウエイト一覧から自動生成(現在は TOPIX500。全銘柄へ広げる予定)
-- データ取得は `yfinance`(非公式)。GitHub Actionsが平日16:37 JST(と、保険の16:57 JST)に差分取得し、BigQuery と `docs/index.html` を更新します
+- **業種の分け方**: TOPIX-17業種(`docs/index.html`)と東証33業種(`docs/sector33.html`)の2通り。ページ上部のボタンで切り替えます
+- データ取得は `yfinance`(非公式)。GitHub Actionsが平日16:37 JST(と、保険の16:57 JST)に差分取得し、BigQuery と `docs/` のページを更新します
+
+### 東証33業種での分析
+
+17業種を細かく分けた東証33業種でも、同じ指標(時価総額加重・均等加重の業種指数の相対強度、売買代金シェア、広がり、判定、スコア)を計算します。
+
+- 業種は `data/universe.csv` の `sector33` 列(JPXのウエイト一覧の業種)をそのまま使います。計算は `metrics.compute(..., level="33")`
+- 33業種には業種ETFがないので、ETFとTOPIXの比較(`rel_*`、`label`)と基準価額の突き合わせはありません(該当する列は空)
+- 判定・スコアは33業種の中での順位で付けるので、17業種の数値とは直接比べられません
+- 対象が TOPIX500 の間は、鉱業(1銘柄)・空運業・パルプ・紙(2銘柄)など銘柄が少ない業種があり、1銘柄の値動きで大きく振れます。一覧では5銘柄未満の業種に「少」を付けています
+- 結果は `data/summary33.csv` と BigQuery の `sector33_summary` / `sector33_timeseries` に保存します
 
 ### ETFから個別銘柄への移行(段階的に進行中)
 
@@ -64,6 +75,7 @@ Yahooは分割や配当があると過去の値まで書き換えるため、直
 | `minervini_screen` | ミネルヴィニのスクリーニング結果(`as_of` × 銘柄で日ごとに積み上げ。ZigZag の転換点や損切り位置を含む) |
 | `minervini_backtest` | バックテストの売買と見送り(売買ルール × シグナル。実行のたびに全置換) |
 | `sector_timeseries` | 直近120営業日の相対強度(ETF・時価総額加重・均等加重)・売買代金シェアの推移(毎回全置換) |
+| `sector33_summary` / `sector33_timeseries` | 上の2つを東証33業種で集計したもの(列は同じ。ETF由来の列は NULL) |
 
 - 書き込みはロードジョブのみ(無料)。ストリーミング挿入は使いません。クエリには `maximum_bytes_billed`(1GB)を付けています
 - 列を追加したときは、既存のテーブルに自動で列が足されます(`ensure_tables`)
@@ -78,6 +90,7 @@ BigQuery の権限がない人にも見せるための版です。データは�
 - `daily.yml` の最後の工程が、これを孤立ブランチ `snapshot` に1コミットだけ強制pushします(履歴は溜まりません。`main` には入りません)
 - `artifact/build.py` が `artifact/snapshot.template.html` にそのJSON(と、任意でClaudeの見立て)を埋め込んで1枚のHTMLを作り、Claudeの定時タスクがアーティファクトとして再公開します
 - ページの見た目と操作はリアルタイム版と同じで、「最新を取得」と BigQuery 接続だけがありません
+- 東証33業種はまだ入っていません(17業種のみ)
 
 ### 実行時刻のずれへの備え
 
@@ -231,7 +244,7 @@ daily-update(平日夕方)
 ```bash
 pip install -r requirements.txt
 python src/fetch.py --demo      # 合成データで動作確認(実データではない)
-python src/dashboard.py --demo  # docs/index.html を生成
+python src/dashboard.py --demo  # docs/index.html と docs/sector33.html を生成
 ```
 
 実データで動かすには Google Cloud の認証(`GOOGLE_APPLICATION_CREDENTIALS`)が必要です。

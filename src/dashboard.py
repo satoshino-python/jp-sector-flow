@@ -1,4 +1,4 @@
-"""data/prices.parquet から指標を計算し、docs/index.html を生成する。"""
+"""data/prices.parquet から指標を計算し、docs/index.html(TOPIX-17業種)と docs/sector33.html(東証33業種)を生成する。"""
 import html
 import sys
 from pathlib import Path
@@ -15,7 +15,9 @@ PRICES = ROOT / "data" / "prices.parquet"
 UNIVERSE = ROOT / "data" / "universe.csv"
 NAV = ROOT / "data" / "nav.parquet"
 OUT_HTML = ROOT / "docs" / "index.html"
+OUT_HTML33 = ROOT / "docs" / "sector33.html"
 OUT_CSV = ROOT / "data" / "summary.csv"
+OUT_CSV33 = ROOT / "data" / "summary33.csv"
 
 LABEL_COLORS = {
     "資金流入": "#d62728",
@@ -27,7 +29,7 @@ LABEL_COLORS = {
 FONT = "Hiragino Sans, Noto Sans JP, Meiryo, sans-serif"
 
 
-def fig_heatmap(summary: pd.DataFrame) -> go.Figure:
+def fig_heatmap(summary: pd.DataFrame, with_etf: bool = True) -> go.Figure:
     cols = [
         ("cw_rel_5d", "相対強度\n5日", lambda v: f"{v:+.1f}"),
         ("cw_rel_20d", "相対強度\n20日", lambda v: f"{v:+.1f}"),
@@ -39,6 +41,8 @@ def fig_heatmap(summary: pd.DataFrame) -> go.Figure:
         ("breadth_ma25", "25日線上\n銘柄比率", lambda v: f"{v:.0f}%"),
         ("rel_20d", "ETF参考\n20日", lambda v: f"{v:+.1f}"),
     ]
+    if not with_etf:
+        cols = [c for c in cols if c[0] != "rel_20d"]
     ranks = summary[[c for c, _, _ in cols]].rank(pct=True)
     z = ranks.values
     text = [[fmt(summary.iloc[i][c]) if pd.notna(summary.iloc[i][c]) else "-"
@@ -51,7 +55,8 @@ def fig_heatmap(summary: pd.DataFrame) -> go.Figure:
     ))
     fig.update_yaxes(autorange="reversed", tickfont={"size": 11})
     fig.update_xaxes(side="top", tickfont={"size": 10})
-    fig.update_layout(height=60 + 34 * len(summary) + 40, margin=dict(l=10, r=10, t=60, b=10))
+    fig.update_layout(height=60 + (34 if len(summary) <= 20 else 26) * len(summary) + 40,
+                      margin=dict(l=10, r=10, t=60, b=10))
     return fig
 
 
@@ -76,13 +81,14 @@ def fig_scatter(summary: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def fig_compare(summary: pd.DataFrame) -> go.Figure:
+def fig_compare(summary: pd.DataFrame, with_etf: bool = True) -> go.Figure:
     """時価総額加重(主軸)・均等加重・業種ETFの相対強度(20日)を並べる。"""
     d = summary.sort_values("cw_rel_20d")
     fig = go.Figure()
-    fig.add_trace(go.Bar(y=d.index, x=d["rel_20d"], orientation="h", name="業種ETF − TOPIX(参考)",
-                         marker_color="#c5ccd3",
-                         hovertemplate="%{y}<br>ETF %{x:+.1f}pt<extra></extra>"))
+    if with_etf:
+        fig.add_trace(go.Bar(y=d.index, x=d["rel_20d"], orientation="h", name="業種ETF − TOPIX(参考)",
+                             marker_color="#c5ccd3",
+                             hovertemplate="%{y}<br>ETF %{x:+.1f}pt<extra></extra>"))
     fig.add_trace(go.Bar(y=d.index, x=d["ew_rel_20d"], orientation="h",
                          name="均等加重 − 全銘柄均等加重", marker_color="#ff9f1c",
                          hovertemplate="%{y}<br>均等加重 %{x:+.1f}pt<extra></extra>"))
@@ -91,7 +97,7 @@ def fig_compare(summary: pd.DataFrame) -> go.Figure:
                          hovertemplate="%{y}<br>時価総額加重 %{x:+.1f}pt<extra></extra>"))
     fig.add_vline(x=0, line_width=1, line_color="#999")
     fig.update_xaxes(title="相対強度 20日(%pt)")
-    fig.update_layout(barmode="group", height=60 + 40 * len(d) + 60,
+    fig.update_layout(barmode="group", height=60 + (40 if with_etf else 28) * len(d) + 60,
                       margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=-0.12))
     return fig
 
@@ -111,7 +117,9 @@ def fig_lines(df: pd.DataFrame, order: list[str], ytitle: str, top_n: int = 5) -
     return fig
 
 
-def table_html(summary: pd.DataFrame) -> str:
+def table_html(summary: pd.DataFrame, with_etf: bool = True) -> str:
+    if not with_etf:
+        return table_html33(summary)
     rows = []
     for s, r in summary.iterrows():
         color = LABEL_COLORS.get(r["cw_label"], "#999")
@@ -143,7 +151,131 @@ def table_html(summary: pd.DataFrame) -> str:
     )
 
 
-def build_html(res, demo: bool) -> str:
+def table_html33(summary: pd.DataFrame) -> str:
+    """33業種の一覧(ETFがないので ETF・基準価額の列は出さない)。"""
+    rows = []
+    for s, r in summary.iterrows():
+        color = LABEL_COLORS.get(r["cw_label"], "#999")
+        flag = r.get("ew_flag")
+        mark = f" <span class='warn'>⚠ {html.escape(flag)}</span>" if isinstance(flag, str) and flag else ""
+        few = " <span class='warn'>少</span>" if r["n_stocks"] < FEW_STOCKS else ""
+        rows.append(
+            f"<tr><td>{html.escape(s)}</td>"
+            f"<td class='l'><span class='tag' style='background:{color}'>{html.escape(r['cw_label'])}</span>{mark}</td>"
+            f"<td>{r['score']:.0f}</td><td>{r['cw_rel_5d']:+.1f}</td><td>{r['cw_rel_20d']:+.1f}</td>"
+            f"<td>{r['cw_rel_60d']:+.1f}</td><td>{r['ew_rel_20d']:+.1f}</td>"
+            f"<td>{r['share_z']:+.2f}</td><td>{r['share_pct']:.1f}%</td>"
+            f"<td>{r['breadth_ma25']:.0f}%</td><td>{r['n_stocks']}{few}</td></tr>"
+        )
+    return (
+        "<table><thead><tr><th>業種</th><th>判定</th><th>スコア</th><th>相対5日<br>(時価総額加重)</th>"
+        "<th>相対20日<br>(時価総額加重)</th><th>相対60日<br>(時価総額加重)</th><th>相対20日<br>(均等加重)</th>"
+        "<th>シェアz</th><th>売買代金<br>シェア</th><th>25日線上</th><th>銘柄数</th></tr></thead><tbody>"
+        + "".join(rows) + "</tbody></table>"
+    )
+
+
+FEW_STOCKS = 5   # 33業種で、銘柄数がこれ未満の業種に「少」を付ける(数値が揺れやすい)
+
+
+def nav_links(current: str) -> str:
+    items = [("17", "index.html", "TOPIX-17業種"), ("33", "sector33.html", "東証33業種")]
+    return "<nav class='tabs'>" + "".join(
+        f"<span class='on'>{name}</span>" if lv == current else f"<a href='{href}'>{name}</a>"
+        for lv, href, name in items) + "</nav>"
+
+
+STYLE = ("""<style>
+body{font-family:""" + FONT + """;margin:0 auto;max-width:960px;padding:12px 14px 40px;color:#222;background:#fff}
+h1{font-size:20px;margin:8px 0 2px} h2{font-size:16px;margin:28px 0 2px}
+.note{color:#666;font-size:12px;margin:2px 0 6px}
+.demo{background:#fff3cd;border:1px solid #e0c36a;padding:8px;border-radius:6px;margin:8px 0;font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{border-bottom:1px solid #e5e5e5;padding:5px 4px;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left;white-space:normal}
+.tag{color:#fff;border-radius:4px;padding:1px 6px;font-size:11px}
+.wrap{overflow-x:auto}
+td.l{white-space:nowrap} .warn{color:#b45309;font-size:11px}
+.tabs{display:flex;gap:6px;margin:6px 0 4px;font-size:13px}
+.tabs a,.tabs span{padding:3px 10px;border-radius:14px;border:1px solid #ccc;text-decoration:none;color:#333}
+.tabs span.on{background:#222;color:#fff;border-color:#222}
+</style></head><body>
+""")
+
+
+def render_figs(figs) -> list[str]:
+    parts = []
+    for i, (title, note, fig) in enumerate(figs):
+        fig.update_layout(template="plotly_white", font={"family": FONT, "size": 12},
+                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        div = fig.to_html(full_html=False, include_plotlyjs="cdn" if i == 0 else False,
+                          config={"displayModeBar": False, "responsive": True})
+        parts.append(f"<section><h2>{title}</h2><p class='note'>{note}</p>{div}</section>")
+    return parts
+
+
+def banners(res, demo: bool) -> tuple[str, str]:
+    demo_banner = ("<div class='demo'>デモデータ(合成)です。実データではありません。</div>"
+                   if demo else "")
+    missing = (f"<p class='note'>取得できなかった銘柄: {res.n_missing}件(集計から除外)</p>"
+               if res.n_missing else "")
+    if res.outliers:
+        items = ", ".join(f"{d} {c}({v * 100:+.0f}%)" for d, c, v in res.outliers[-10:])
+        missing += (f"<p class='note'>誤データの疑いで除外した日次リターン: {len(res.outliers)}件"
+                    f"(直近: {html.escape(items)})</p>")
+    return demo_banner, missing
+
+
+def build_html33(res, demo: bool) -> str:
+    """東証33業種のページ。ETFがないので、銘柄から作った指数・売買代金・広がりだけで見る。"""
+    s = res.summary
+    order = list(s.index)
+    figs = [
+        ("業種ヒートマップ(東証33業種)", "色は各列の順位(赤=強い、青=弱い)。数値は実測値。上から総合スコア順。"
+         "相対強度は構成銘柄から作った時価総額加重の業種指数を全銘柄と比べたもの。",
+         fig_heatmap(s, with_etf=False)),
+        ("相対強度 × 売買代金シェア", "右上=価格も強く売買も増えている(資金流入)。円の大きさは売買代金シェア。",
+         fig_scatter(s)),
+        ("相対強度の推移(時価総額加重、期首=100)",
+         "時価総額加重の業種指数 ÷ 全銘柄の時価総額加重指数。凡例クリックで業種を追加表示。初期表示は総合スコア上位5業種。",
+         fig_lines(res.rs_line_cw, order, "業種 ÷ 全銘柄")),
+        ("時価総額加重・均等加重の比較(相対強度20日)",
+         "赤=時価総額加重(主軸)、橙=均等加重。時価総額加重のほうが強い業種は一部の大型株が引っ張っている形です。",
+         fig_compare(s, with_etf=False)),
+        ("相対強度の推移(均等加重、期首=100)", "構成銘柄の均等加重指数 ÷ 全銘柄の均等加重指数。",
+         fig_lines(res.rs_line_ew, order, "業種 ÷ 全銘柄")),
+        ("売買代金シェアの推移(5日平均)", "構成銘柄の売買代金を業種別に合算したシェア(%)。",
+         fig_lines(res.share5 * 100, order, "シェア(%)")),
+    ]
+    parts = render_figs(figs)
+    demo_banner, missing = banners(res, demo)
+    return f"""<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>日本株 東証33業種 資金動向</title>
+{STYLE}
+<h1>日本株 業種別 資金動向(東証33業種)</h1>
+{nav_links("33")}
+<p class="note">データ基準日: {res.as_of.date()} / TOPIX構成銘柄(約{int(s['n_stocks'].sum())}銘柄)から作った東証33業種別の指数と売買代金 / 投資判断の材料の一つであり、売買の推奨ではありません</p>
+{demo_banner}
+{''.join(parts)}
+<section><h2>業種一覧</h2>
+<p class="note">判定・スコアの作り方は17業種と同じです(相対強度20日(時価総額加重)とシェアzの符号で分類。スコアは4指標の順位平均)。
+33業種には業種ETFがないため、ETFとの比較と基準価額の突き合わせはありません。均等加重と相対強度の符号が食い違う業種に⚠、銘柄数が{FEW_STOCKS}未満の業種に「少」を付けています。</p>
+<div class="wrap">{table_html(s, with_etf=False)}</div>{missing}</section>
+<section><h2>読み方の注意</h2>
+<ul class="note">
+<li>33業種は17業種を細かく分けたもので、銘柄が数銘柄しかない業種(鉱業・空運業など)は1銘柄の値動きで大きく振れます。銘柄数とあわせて見てください。</li>
+<li>集計対象はTOPIXの構成銘柄(現在はTOPIX500)で、小型株は含みません。</li>
+<li>売買代金は買いと売りの合計で、純流入ではありません。方向は価格とセットで見てください。</li>
+<li>先物・オプションSQ、指数リバランス、決算期は売買代金が歪みます。</li>
+</ul></section>
+</body></html>"""
+
+
+def build_html(res, demo: bool, level: str = "17") -> str:
+    if level == "33":
+        return build_html33(res, demo)
     s = res.summary
     order = list(s.index)
     figs = [
@@ -169,22 +301,8 @@ def build_html(res, demo: bool) -> str:
         ("売買代金シェアの推移(5日平均)", "構成銘柄の売買代金を業種別に合算したシェア(%)。",
          fig_lines(res.share5 * 100, order, "シェア(%)")),
     ]
-    parts = []
-    for i, (title, note, fig) in enumerate(figs):
-        fig.update_layout(template="plotly_white", font={"family": FONT, "size": 12},
-                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        div = fig.to_html(full_html=False, include_plotlyjs="cdn" if i == 0 else False,
-                          config={"displayModeBar": False, "responsive": True})
-        parts.append(f"<section><h2>{title}</h2><p class='note'>{note}</p>{div}</section>")
-
-    demo_banner = ("<div class='demo'>デモデータ(合成)です。実データではありません。</div>"
-                   if demo else "")
-    missing = (f"<p class='note'>取得できなかった銘柄: {res.n_missing}件(集計から除外)</p>"
-               if res.n_missing else "")
-    if res.outliers:
-        items = ", ".join(f"{d} {c}({v * 100:+.0f}%)" for d, c, v in res.outliers[-10:])
-        missing += (f"<p class='note'>誤データの疑いで除外した日次リターン: {len(res.outliers)}件"
-                    f"(直近: {html.escape(items)})</p>")
+    parts = render_figs(figs)
+    demo_banner, missing = banners(res, demo)
     if res.nav_as_of is not None:
         nav_note = (f"基準価額(分配金再投資)との突き合わせ基準日: {res.nav_as_of.date()}。"
                     f"終値の20日騰落と基準価額の20日騰落の差が{DEV_WARN_PT}ptを超える、または"
@@ -195,19 +313,8 @@ def build_html(res, demo: bool) -> str:
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>日本株 業種別 資金動向</title>
-<style>
-body{{font-family:{FONT};margin:0 auto;max-width:960px;padding:12px 14px 40px;color:#222;background:#fff}}
-h1{{font-size:20px;margin:8px 0 2px}} h2{{font-size:16px;margin:28px 0 2px}}
-.note{{color:#666;font-size:12px;margin:2px 0 6px}}
-.demo{{background:#fff3cd;border:1px solid #e0c36a;padding:8px;border-radius:6px;margin:8px 0;font-size:13px}}
-table{{border-collapse:collapse;width:100%;font-size:12px}}
-th,td{{border-bottom:1px solid #e5e5e5;padding:5px 4px;text-align:right;white-space:nowrap}}
-th:first-child,td:first-child{{text-align:left;white-space:normal}}
-.tag{{color:#fff;border-radius:4px;padding:1px 6px;font-size:11px}}
-.wrap{{overflow-x:auto}}
-td.l{{white-space:nowrap}} .warn{{color:#b45309;font-size:11px}}
-</style></head><body>
-<h1>日本株 業種別 資金動向</h1>
+{STYLE}<h1>日本株 業種別 資金動向</h1>
+{nav_links("17")}
 <p class="note">データ基準日: {res.as_of.date()} / TOPIX構成銘柄(約{int(s['n_stocks'].sum())}銘柄)から作った業種(TOPIX-17)別の指数と売買代金 / 投資判断の材料の一つであり、売買の推奨ではありません</p>
 {demo_banner}
 {''.join(parts)}
@@ -232,14 +339,15 @@ def main() -> int:
     prices = pd.read_parquet(PRICES)
     uni = pd.read_csv(UNIVERSE, dtype={"code": str})
     nav = pd.read_parquet(NAV) if NAV.exists() else None
-    res = compute(prices, uni, nav)
     OUT_HTML.parent.mkdir(parents=True, exist_ok=True)
-    OUT_HTML.write_text(build_html(res, demo), encoding="utf-8")
-    out = res.summary.copy()
-    num_cols = out.select_dtypes("number").columns
-    out[num_cols] = out[num_cols].round(4)
-    out.to_csv(OUT_CSV, encoding="utf-8-sig")
-    print(f"生成: {OUT_HTML} (基準日 {res.as_of.date()}, 業種 {len(res.summary)})")
+    for level, out_html, out_csv in (("17", OUT_HTML, OUT_CSV), ("33", OUT_HTML33, OUT_CSV33)):
+        res = compute(prices, uni, nav if level == "17" else None, level=level)
+        out_html.write_text(build_html(res, demo, level), encoding="utf-8")
+        out = res.summary.copy()
+        num_cols = out.select_dtypes("number").columns
+        out[num_cols] = out[num_cols].round(4)
+        out.to_csv(out_csv, encoding="utf-8-sig")
+        print(f"生成: {out_html} (基準日 {res.as_of.date()}, 業種 {len(res.summary)})")
     return 0
 
 

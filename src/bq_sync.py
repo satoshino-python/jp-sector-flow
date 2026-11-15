@@ -11,6 +11,7 @@
     universe           ... 銘柄リスト(全置換)
     sector_summary     ... 業種ごとの最新指標(as_of × 業種で積み上げ)
     sector_timeseries  ... 直近120営業日の推移(全置換)
+    sector33_summary / sector33_timeseries ... 同じものを東証33業種で集計したもの(ETF由来の列は NULL)
 
 株価の保存先の正は BigQuery。data/prices.parquet は1回の実行の中だけで使う作業用ファイル
 (--pull で作り、fetch.py が差分を足し、このスクリプトで書き戻す)で、リポジトリにはコミットしない。
@@ -83,7 +84,7 @@ def build_summary(res: Result, now: datetime) -> pd.DataFrame:
     df["as_of"] = res.as_of.date()
     df["rank"] = np.arange(1, len(df) + 1)   # summary は総合スコアの降順
     df["loaded_at"] = now
-    df["etf_code"] = df["etf_code"].astype(str)
+    df["etf_code"] = df["etf_code"].map(lambda v: None if v is None or pd.isna(v) else str(v))
     df["nav_date"] = _to_date(df["nav_date"]) if "nav_date" in df.columns else None
     for n, t in bq_io.SUMMARY_SCHEMA:
         if n not in df.columns:
@@ -166,12 +167,15 @@ def main() -> int:
     uni_raw = pd.read_csv(UNIVERSE, dtype={"code": str})
     nav = pd.read_parquet(NAV) if NAV.exists() else None
     res = compute(prices_raw, uni_raw, nav)
+    res33 = compute(prices_raw, uni_raw, None, level="33")
 
     frames = {
         "prices": build_prices(prices_raw, now),
         "universe": build_universe(uni_raw, now),
         "sector_summary": build_summary(res, now),
         "sector_timeseries": build_timeseries(res, now),
+        "sector33_summary": build_summary(res33, now),
+        "sector33_timeseries": build_timeseries(res33, now),
     }
     for name, f in frames.items():
         print(f"{name}: {len(f)}行 x {len(f.columns)}列")
@@ -194,7 +198,11 @@ def main() -> int:
     bq_io.merge_table(client, frames["sector_summary"], "sector_summary",
                       keys=["as_of", "sector"])
     bq_io.replace_table(client, frames["sector_timeseries"], "sector_timeseries")
-    print(f"BigQuery反映完了: 基準日 {res.as_of.date()} / 業種 {len(frames['sector_summary'])}")
+    bq_io.merge_table(client, frames["sector33_summary"], "sector33_summary",
+                      keys=["as_of", "sector"])
+    bq_io.replace_table(client, frames["sector33_timeseries"], "sector33_timeseries")
+    print(f"BigQuery反映完了: 基準日 {res.as_of.date()} / 業種 {len(frames['sector_summary'])}"
+          f" / 33業種 {len(frames['sector33_summary'])}")
     return 0
 
 

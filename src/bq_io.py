@@ -98,6 +98,11 @@ TABLES = {
                            desc="業種ごとの最新指標。キーは (as_of, sector)。日ごとに積み上げ"),
     "sector_timeseries": dict(schema=TIMESERIES_SCHEMA, partition=None, cluster=["sector"],
                               desc="直近120営業日の相対強度・シェアの推移(毎回全置換。相対強度は期首=100に再基準化)"),
+    # 東証33業種版(ETFがないので rel_* / label / nav_* などETF由来の列は NULL。列は17業種版と同じ)
+    "sector33_summary": dict(schema=SUMMARY_SCHEMA, partition=None, cluster=["sector"],
+                             desc="東証33業種ごとの最新指標。キーは (as_of, sector)。日ごとに積み上げ。ETF由来の列は NULL"),
+    "sector33_timeseries": dict(schema=TIMESERIES_SCHEMA, partition=None, cluster=["sector"],
+                                desc="東証33業種の直近120営業日の相対強度・シェアの推移(毎回全置換。rs_etf は NULL)"),
     "minervini_screen": dict(schema=MINERVINI_SCHEMA, partition="as_of", cluster=["code"],
                              desc="ミネルヴィニのスクリーニング結果(src/minervini.py)。キーは (as_of, code)。"
                                   "テンプレートを6条件以上満たした銘柄。zigzag は [種類, 日付, 価格] のJSON"),

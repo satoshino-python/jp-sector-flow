@@ -1,6 +1,8 @@
 """業種別の資金動向指標を計算する。
 
 指標の考え方:
+  業種の分け方 ... TOPIX-17業種(既定)と東証33業種(compute(level="33"))。33業種にはETFがないので、
+                  ETF・基準価額に関する指標は17業種だけ
   価格側 ... 業種ETF(TOPIX-17)のTOPIX対比リターン(相対強度)
   売買側 ... 構成銘柄の売買代金を業種別に合算したもの
             (業種ETF自体の売買代金は薄くノイズが大きいため使わない)
@@ -137,7 +139,14 @@ def _label(rel20: float, z: float) -> str:
     return "低調"
 
 
-def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = None) -> Result:
+def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = None,
+            level: str = "17") -> Result:
+    """level="17" は TOPIX-17業種(universe の sector)、"33" は東証33業種(sector33)で集計する。
+
+    33業種には業種ETFがないため、ETF・基準価額に関する列(rel_*、label、nav_* など)は空になる。
+    """
+    if level not in ("17", "33"):
+        raise ValueError(f"level は '17' か '33': {level}")
     close = _pivot(prices, "close")
     turn = _pivot(prices, "turnover")
     # 調整後終値がない古いデータでも動くように、なければ終値で代用する
@@ -146,8 +155,13 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     nav_pv = (nav.pivot(index="date", columns="code", values="nav").sort_index()
               if nav is not None and not nav.empty else None)
 
-    etf = uni[uni["type"] == "etf"].set_index("sector")["code"]
     stocks = uni[uni["type"] == "stock"]
+    if level == "17":
+        etf = uni[uni["type"] == "etf"].set_index("sector")["code"]
+    else:
+        stocks = stocks.assign(sector=stocks["sector33"])
+        stocks = stocks[stocks["sector"].notna() & (stocks["sector"].astype(str).str.strip() != "")]
+        etf = pd.Series({s: None for s in sorted(stocks["sector"].unique())}, dtype=object)
     stock_codes = [c for c in stocks["code"] if c in close.columns]
     n_missing = int((uni["type"] == "stock").sum() - len(stock_codes))
 
@@ -214,18 +228,26 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     for s in sectors:
         ec = etf[s]
         members = [c for c in stock_codes if sec_of[c] == s]
-        if ec not in close.columns or not members:
+        has_etf = ec is not None and ec in close.columns
+        if not members or (level == "17" and not has_etf):
             continue
-        e = close[ec].dropna()
         u, d = up_turn[members].sum(), down_turn[members].sum()
         row = {
             "sector": s,
             "etf_code": ec,
             "n_stocks": len(members),
-            "ret_5d": ret(e, 5), "ret_20d": ret(e, 20), "ret_60d": ret(e, 60),
-            "rel_5d": ret(e, 5) - ret(bench, 5),
-            "rel_20d": ret(e, 20) - ret(bench, 20),
-            "rel_60d": ret(e, 60) - ret(bench, 60),
+        }
+        if has_etf:
+            e = close[ec].dropna()
+            row.update({
+                "ret_5d": ret(e, 5), "ret_20d": ret(e, 20), "ret_60d": ret(e, 60),
+                "rel_5d": ret(e, 5) - ret(bench, 5),
+                "rel_20d": ret(e, 20) - ret(bench, 20),
+                "rel_60d": ret(e, 60) - ret(bench, 60),
+            })
+        else:
+            row.update({k: np.nan for k in ["ret_5d", "ret_20d", "ret_60d", "rel_5d", "rel_20d", "rel_60d"]})
+        row.update({
             "med_ret_20d": float(ret20_stock[members].median()),
             "turn_ratio_1d": float(turn_ratio_1d[s].iloc[-1]),
             "share_pct": float(share5[s].iloc[-1] * 100),
@@ -233,8 +255,8 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
             "up_turn_ratio": float(u / (u + d)) if (u + d) > 0 else np.nan,
             "breadth_ma25": float(above_ma25[members].mean() * 100),
             "breadth_pos20": float(pos20[members].mean() * 100),
-        }
-        row["label"] = _label(row["rel_20d"], row["share_z"])
+        })
+        row["label"] = _label(row["rel_20d"], row["share_z"]) if has_etf else None
         if s in ew_sec.columns:
             ix = ew_sec[s]
             for n in (5, 20, 60):
@@ -252,10 +274,10 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
                               if _sign_conflict(row["cw_rel_20d"], row.get("ew_rel_20d", np.nan)) else "")
             row["etf_flag"] = "ETFと方向相違" if _sign_conflict(row["cw_rel_20d"], row["rel_20d"]) else ""
         stats = (_nav_stats(close[ec], bench, nav_pv[ec])
-                 if nav_pv is not None and ec in nav_pv.columns else {})
+                 if has_etf and nav_pv is not None and ec in nav_pv.columns else {})
         row.update({k: stats.get(k, np.nan) for k in
                     ["nav_date", "dev_20d", "nav_noise", "rel_20d_nav", "rel_20d_same"]})
-        row["nav_flag"] = _nav_flag(row)
+        row["nav_flag"] = _nav_flag(row) if has_etf else None
         rows.append(row)
 
     summary = pd.DataFrame(rows).set_index("sector")
@@ -266,7 +288,8 @@ def compute(prices: pd.DataFrame, uni: pd.DataFrame, nav: pd.DataFrame | None = 
     summary = summary.sort_values("score", ascending=False)
 
     # --- 相対強度ライン(直近120営業日、期首=100) ---
-    rs = pd.DataFrame({s: close[etf[s]] / bench for s in summary.index if etf[s] in close.columns})
+    rs = pd.DataFrame({s: close[etf[s]] / bench for s in summary.index
+                       if etf[s] is not None and etf[s] in close.columns}, index=close.index)
     rs = rs.tail(120)
     rs_line = rs / rs.iloc[0] * 100
 
