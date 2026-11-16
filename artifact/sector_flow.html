@@ -182,7 +182,7 @@ details.table-view summary{cursor:pointer;color:var(--fg2)}
   <div id="status" role="status" aria-live="polite"></div>
 
   <section class="comment" id="comment" hidden aria-label="Claudeの見立て">
-    <div class="eyebrow">CLAUDEの見立て</div>
+    <div class="eyebrow" id="c-eyebrow">CLAUDEの見立て</div>
     <div class="headline" id="c-head"></div>
     <div id="c-body"></div>
     <details id="c-past" hidden><summary>過去の見立て</summary><div id="c-past-list"></div></details>
@@ -889,12 +889,17 @@ function renderDrill(loading) {
   drawStock();
 }
 
-/* ---------- Claudeの見立て(内蔵DB) ---------- */
-function renderComment(snap) {
-  const docs = snap.docs.map(d => d.data()).filter(x => x && x.headline).sort((a, b) => String(b.as_of).localeCompare(String(a.as_of)));
+/* ---------- Claudeの見立て(内蔵DB。17業種は comments、33業種は comments33) ---------- */
+const CMT = {"17": [], "33": []};
+function onComments(lv) {
+  return snap => { CMT[lv] = snap.docs.map(d => d.data()).filter(x => x && x.headline); if (state.level === lv) renderComment(); };
+}
+function renderComment() {
+  const docs = CMT[state.level].slice().sort((a, b) => String(b.as_of).localeCompare(String(a.as_of)));
   const sec = $("#comment");
   if (!docs.length) { sec.hidden = true; return; }
   sec.hidden = false;
+  $("#c-eyebrow").textContent = "CLAUDEの見立て(" + (state.level === "33" ? "東証33業種" : "TOPIX-17業種") + ")";
   const c = docs[0];
   $("#c-head").textContent = (c.as_of ? c.as_of + " " : "") + c.headline;
   $("#c-body").replaceChildren(...String(c.body || "").split("\n").filter(Boolean).map(p => h("p", null, p)));
@@ -913,6 +918,7 @@ function setLevel(lv) {
   document.body.classList.toggle("l33", lv === "33");
   document.querySelectorAll("#level button").forEach(x => x.setAttribute("aria-pressed", x.dataset.l === lv ? "true" : "false"));
   $("#lead").textContent = LEVELS[lv].lead;
+  renderComment();
   state.rows = []; state.series = {}; state.stocks = {}; state.picked = new Map();
   state.selected = null; state.stockCode = null; state.stockC = null;
   if (lv === "33" && state.measure === "e") {
@@ -939,7 +945,9 @@ new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if (state.r
   try { mcp = window.claude && window.claude.use ? await window.claude.use("mcp") : null; } catch (e) { mcp = null; }
   try { dbh = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { dbh = null; }
   if (dbh) {
-    try { dbh.collection("comments").orderBy("as_of", "desc").limit(5).onSnapshot(renderComment, () => { $("#comment").hidden = true; }); } catch (e) { /* 見立てなしで続行 */ }
+    [["17", "comments"], ["33", "comments33"]].forEach(([lv, col]) => {
+      try { dbh.collection(col).orderBy("as_of", "desc").limit(5).onSnapshot(onComments(lv), () => { CMT[lv] = []; if (state.level === lv) renderComment(); }); } catch (e) { /* 見立てなしで続行 */ }
+    });
   }
   await load(false);
 })();

@@ -180,7 +180,7 @@ details.table-view summary{cursor:pointer;color:var(--fg2)}
   <div id="status" role="status" aria-live="polite"></div>
 
   <section class="comment" id="comment" hidden aria-label="Claudeの見立て">
-    <div class="eyebrow">CLAUDEの見立て</div>
+    <div class="eyebrow" id="c-eyebrow">CLAUDEの見立て</div>
     <div class="headline" id="c-head"></div>
     <div id="c-body"></div>
     <details id="c-past" hidden><summary>過去の見立て</summary><div id="c-past-list"></div></details>
@@ -341,6 +341,7 @@ function setLevel(lv) {
   document.body.classList.toggle("l33", lv === "33");
   document.querySelectorAll("#level button").forEach(x => x.setAttribute("aria-pressed", x.dataset.l === lv ? "true" : "false"));
   $("#lead").textContent = LEADS[lv];
+  renderComment();
   const d = src();
   state.rows = d.rows; state.series = d.series || {}; state.stocks = {};
   state.picked = new Map(); state.stockCode = null; state.stockC = null;
@@ -783,12 +784,14 @@ function renderDrill(loading) {
   drawStock();
 }
 
-/* ---------- Claudeの見立て(スナップショットに同梱) ---------- */
-function renderComment(items) {
+/* ---------- Claudeの見立て(スナップショットに同梱。17業種は comments、33業種は comments33) ---------- */
+function renderComment() {
+  const items = state.level === "33" ? SNAP.comments33 : SNAP.comments;
   const docs = (items || []).filter(x => x && x.headline).sort((a, b) => String(b.as_of).localeCompare(String(a.as_of)));
   const sec = $("#comment");
   if (!docs.length) { sec.hidden = true; return; }
   sec.hidden = false;
+  $("#c-eyebrow").textContent = "CLAUDEの見立て(" + (state.level === "33" ? "東証33業種" : "TOPIX-17業種") + ")";
   const c = docs[0];
   $("#c-head").textContent = (c.as_of ? c.as_of + " " : "") + c.headline;
   $("#c-body").replaceChildren(...String(c.body || "").split("\n").filter(Boolean).map(p => h("p", null, p)));
@@ -814,7 +817,6 @@ let rt = 0;
 new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if (state.rows.length) { renderScatter(); renderLines(); drawStock(); } }, 120); }).observe(document.body);
 
 (function init() {
-  renderComment(SNAP.comments);
   load();
 })();
 </script>
