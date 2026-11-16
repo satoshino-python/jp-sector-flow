@@ -82,6 +82,11 @@ Yahooは分割や配当があると過去の値まで書き換えるため、直
 - 反映後に、送った全行が同じ値で `prices` にあることを確かめ、食い違えばジョブが失敗します
 - 手元で内容だけ確認するには `python src/bq_sync.py --dry-run`
 
+### リアルタイム版アーティファクト
+
+`artifact/sector_flow.html` を Claude のアーティファクトとして公開しています(非公開)。閲覧者の Google Cloud BigQuery コネクタで、開いたときに BigQuery の最新の結果を読みます。
+見出しの切り替えで TOPIX-17業種(`sector_summary` など)と東証33業種(`sector33_summary` など)を読み分けます。
+
 ### 共有用アーティファクト(スナップショット版)
 
 BigQuery の権限がない人にも見せるための版です。データはページ自体に埋め込まれ、閲覧にBigQueryは要りません。
