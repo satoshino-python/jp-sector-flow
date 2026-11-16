@@ -45,8 +45,8 @@
 
 ## 業種ダッシュボード(artifact/sector_flow.html / snapshot.template.html)
 
-- リアルタイム版: Claude のアーティファクト <https://claude.ai/artifact/4sdJVQJV8U97TLT44gKjDx> (非公開)。`artifact/sector_flow.html` をそのまま公開する。`mcp` capability で `sector_summary`・`sector_timeseries`・`universe`・`prices` を、33業種では `sector33_summary`・`sector33_timeseries` と universe の `sector33` 列を読む。見立ては `db` capability の `comments`。再公開時は capabilities を省略すると引き継がれる
-- 共有版: <https://claude.ai/artifact/1Hi5K8EagXc1kirik52VXv>。`artifact/build.py` で `snapshot.template.html` に `snapshot.json` を埋め込む(33業種は `l33`)
+- リアルタイム版: Claude のアーティファクト <https://claude.ai/artifact/4sdJVQJV8U97TLT44gKjDx> (非公開)。`artifact/sector_flow.html` をそのまま公開する。`mcp` capability で `sector_summary`・`sector_timeseries`・`universe`・`prices` を、33業種では `sector33_summary`・`sector33_timeseries` と universe の `sector33` 列を読む。見立ては `db` capability の `comments`(17業種)と `comments33`(33業種。doc_id は基準日)。再公開時は capabilities を省略すると引き継がれる
+- 共有版: <https://claude.ai/artifact/1Hi5K8EagXc1kirik52VXv>。`artifact/build.py` で `snapshot.template.html` に `snapshot.json` を埋め込む(33業種は `l33`。見立ては `--comments` / `--comments33`)
 - 両方とも見出しの切り替えで TOPIX-17業種 / 東証33業種を行き来する。33業種では ETF・基準価額の列やボタンを隠す(`body.l33 .etf-only`)。片方の見た目を変えたら、もう片方も合わせる
 - 動作確認は検証用ページと同じ方法(模擬スクリプト + `page.route`)
 
